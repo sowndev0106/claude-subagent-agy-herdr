@@ -1,52 +1,52 @@
 # claude-subagent-agy-herdr
 
-Bộ công cụ và skill tích hợp để **Claude Code** điều phối **Antigravity CLI (`agy`)** làm worker subagent, hiển thị và quản lý trực quan qua terminal multiplexer **`herdr`**.
+A toolkit and agent skills suite enabling **Claude Code** to orchestrate **Antigravity CLI (`agy`)** as worker subagents, managed and visualized through the **`herdr`** terminal multiplexer.
 
 ---
 
-## 💡 Triết lý hoạt động
+## 💡 Operational Philosophy
 
 > **Claude Code = Planner + Manager + Verifier**  
-> **Antigravity (`agy`, Gemini 3.8 Flash High) = Cheap, fast Worker**
+> **Antigravity (`agy`, Gemini 3.8 Flash High) = Fast, cost-effective Worker**
 
-* Claude Code lập kế hoạch, chia việc, theo dõi tiến độ, kiểm chứng kết quả và merge code.
-* `agy` chạy độc lập với tốc độ cao, luôn bypass permissions để hoàn thành nhanh các tác vụ được chỉ định rõ phạm vi.
-* **Mỗi phiên Claude Code = Một workspace herdr** (ví dụ: `#132 Đánh giá engine gợi ý`).
-* **Mỗi subagent = Một tab riêng biệt** trong workspace đó (nhãn tab = ID job `a-<task>-xxxx`).
-* **Cách ly mã nguồn**: Tùy chọn `-W` tự động tạo Git worktree riêng biệt (nhánh `agy/<id>`), tránh xung đột với nhánh làm việc chính.
+* **Claude Code** handles planning, task breakdown, progress tracking, result verification, and code merging.
+* **`agy`** operates independently with high velocity, running with `--dangerously-skip-permissions` to swiftly execute well-scoped instructions.
+* **1 Claude Code Session = 1 `herdr` Workspace** (e.g., `#132 Evaluate suggestion engine`).
+* **1 Subagent = 1 Tab** inside that workspace (tab label matches job ID: `a-<task>-xxxx`).
+* **Source Isolation**: The optional `-W` flag provisions an isolated Git worktree (branch `agy/<id>`), preventing uncommitted changes and conflicts on the main working tree.
 
 ---
 
-## 📦 Các thành phần trong bộ skill
+## 📦 Suite Components
 
-| Skill / Công cụ | Mô tả | Lệnh chính |
+| Skill / Tool | Description | Primary Commands |
 |---|---|---|
-| **`agy-subagent`** | Giao việc độc lập cho một subagent agy; quản lý qua herdr TUI hoặc headless. | `agy-hd start`, `agy-sub`, `agy-ctl` |
-| **`agy-parallel`** | Chia nhỏ việc thành 2–4 task độc lập, chạy fan-out song song trên nhiều tab/worktree. | `agy-hd fan`, `agy-fan` |
-| **`agy-review`** | Nhận ý kiến đánh giá độc lập (second opinion) từ agy đối với diff/code, trả về JSON có cấu trúc (`schema.json`). | `agy-sub -R -s schema.json` |
-| **`claude-task-id`** | Cấp phát số và tên định danh 3 chữ số (`#132 ...`) dùng chung giữa Claude Code và nhãn workspace Herdr. | `agy-id claim`, `agy-id show` |
+| **`agy-subagent`** | Delegate scoped tasks to an agy subagent; manage via herdr TUI or headless runner. | `agy-hd start`, `agy-sub`, `agy-ctl` |
+| **`agy-parallel`** | Fan-out 2–4 independent tasks concurrently across isolated tabs and worktrees. | `agy-hd fan`, `agy-fan` |
+| **`agy-review`** | Solicit an independent read-only second opinion on diffs/code, validated against a JSON schema (`schema.json`). | `agy-sub -R -s schema.json` |
+| **`claude-task-id`** | Allocate and maintain a 3-digit task identifier (`#132 ...`) shared across Claude Code and herdr workspaces. | `agy-id claim`, `agy-id show` |
 
 ---
 
-## ⏱️ Cơ chế Giám sát & Tự phục hồi Quota (Scheduler)
+## ⏱️ Health Monitoring & Auto-Recovery (Scheduler)
 
-Khi giao việc cho subagent, phiên Claude Code có thể không nắm được nếu agy bị treo hoặc chạm giới hạn hạn mức (Quota Limit 429). Hệ thống giải quyết bằng cơ chế 2 lớp:
+Subagents can occasionally stall or hit API rate limits (such as Google Antigravity quota 429 / `RESOURCE_EXHAUSTED`). The suite employs a two-tier monitoring architecture:
 
 1. **Systemd User Timer (`agy-hd-tick.timer`)**:
-   * Chạy `agy-hd tick` mỗi phút một lần độc lập với phiên Claude Code.
-   * Ghi log trạng thái vào `~/.cache/agy-hd/STATUS.tsv` và `events.log`.
-   * **Tự động khôi phục khi hết hạn mức (Quota 429)**: Khi agy gặp lỗi `RESOURCE_EXHAUSTED`, hệ thống tự động thoát tiến trình và mở lại (`agy-hd restart`), tiếp tục phiên hội thoại cũ từ checkpoint dở dang mà không làm lại từ đầu.
-2. **Cron Check-in trong Claude Code**:
-   * Khi khởi chạy subagent async (`start -A` hoặc `fan`), Claude Code đặt lịch đánh thức mỗi phút để đọc `agy-hd tick --show` và xử lý theo trạng thái:
-     * `RUNNING`: Đang chạy bình thường.
-     * `DONE`: Hoàn thành $\rightarrow$ kiểm chứng diff, test và đóng tab (`agy-hd close` hoặc `wt-merge`).
-     * `QUOTA`: Đang được scheduler tự restart.
-     * `STOPPED` / `STALL`: Treo $\rightarrow$ inspect log, interrupt hoặc resume.
-     * `BLOCKED`: Cần người dùng tương tác.
+   * Executes `agy-hd tick` every minute independent of the active Claude Code session.
+   * Maintains real-time status in `~/.cache/agy-hd/STATUS.tsv` and logs transitions to `events.log`.
+   * **Automatic Quota Recovery**: Detects `RESOURCE_EXHAUSTED` (429), gracefully closes the hung process, and resumes the exact conversation via `agy-hd restart <job>` without losing context or restarting from scratch.
+2. **Claude Code Cron Check-in**:
+   * During async execution (`start -A` or `fan`), Claude Code schedules a 1-minute check-in to query `agy-hd tick --show` and react accordingly:
+     * `RUNNING`: Actively working; continue monitoring.
+     * `DONE`: Task completed; verify diffs and tests, then close tab (`agy-hd close` or `wt-merge`).
+     * `QUOTA`: Automatically undergoing recovery by scheduler.
+     * `STOPPED` / `STALL`: Process halted or hung; inspect logs, interrupt, or resume.
+     * `BLOCKED`: Awaiting interactive human input.
 
 ---
 
-## 🚀 Cài đặt
+## 🚀 Installation
 
 ### 1. Clone repository
 ```bash
@@ -54,15 +54,15 @@ git clone git@github.com:sowndev0106/claude-subagent-agy-herdr.git
 cd claude-subagent-agy-herdr
 ```
 
-### 2. Chạy script cài đặt
-Script sẽ tự động tạo symlink skills vào `~/.claude/skills/`, symlink các lệnh vào `~/.local/bin/`, và kích hoạt systemd timer:
+### 2. Run the installer
+The installer script links skills to `~/.claude/skills/`, places executable binaries into `~/.local/bin/`, and sets up the systemd user timer:
 
 ```bash
 ./install.sh
 ```
 
-### 3. Cấp quyền trong Claude Code
-Thêm các lệnh bash vào allowlist trong `~/.claude/settings.json`:
+### 3. Grant permissions in Claude Code
+Add the required bash tool executions to `permissions.allow` in `~/.claude/settings.json`:
 
 ```json
 {
@@ -80,74 +80,74 @@ Thêm các lệnh bash vào allowlist trong `~/.claude/settings.json`:
 
 ---
 
-## 🛠️ Hướng dẫn sử dụng nhanh
+## 🛠️ Quick Start
 
-### 1. Định danh phiên làm việc (Task ID)
+### 1. Claim a Task ID for your session
 ```bash
 agy-id claim "Refactor parser module"
-# Trả về: #133 Refactor parser module
+# Returns: #133 Refactor parser module
 ```
 
-### 2. Chạy 1 subagent qua herdr (có worktree riêng)
+### 2. Launch an agy subagent in herdr (with isolated worktree)
 ```bash
-# Bắt đầu task trong worktree riêng, chạy bất đồng bộ
+# Launch task in dedicated worktree asynchronously
 agy-hd start -n parser -d /path/to/repo -W -f task.md -A
 
-# Xem trực tiếp trên giao diện TUI Herdr
+# Inspect live in herdr TUI
 herdr --session cas
 
-# Hoặc attach thẳng vào tab của agent
+# Or directly attach to the agent's tab
 agy-hd open <job-id>
 
-# Xem diff khi xong việc
+# Review diff once done
 agy-hd wt-diff <job-id>
 
-# Gộp thay đổi vào nhánh hiện tại và đóng tab
+# Merge changes into current branch and close tab
 agy-hd wt-merge <job-id>
 ```
 
-### 3. Chạy song song nhiều task (`fan-out`)
+### 3. Run parallel tasks (`fan-out`)
 ```bash
-# Chuẩn bị thư mục tasks/ chứa các file <task_id>.md độc lập
+# Prepare tasks directory containing individual <task_id>.md files
 agy-hd fan -i ./tasks -o ./results -j 3 -d /path/to/repo -W
 ```
 
-### 4. Review code độc lập với JSON Schema
+### 4. Independent Code Review with JSON Schema
 ```bash
 git diff main...HEAD > /tmp/diff.patch
 agy-sub -R -d /path/to/repo -s "$(cat ~/.claude/skills/agy-review/schema.json)" \
-  -p "Review diff tại /tmp/diff.patch. Tìm lỗi logic, race condition, thiếu test."
+  -p "Review diff at /tmp/diff.patch. Detect logic bugs, race conditions, missing tests."
 ```
 
 ---
 
-## 📂 Cấu trúc Repository
+## 📂 Repository Structure
 
 ```
 claude-subagent-agy-herdr/
-├── README.md
-├── install.sh
+├── README.md                  # Documentation and architecture guide
+├── install.sh                 # Automatic symlinker and systemd service setup
 ├── .gitignore
-├── agy-subagent/
+├── agy-subagent/              # Core subagent skill
 │   ├── SKILL.md
 │   ├── REFERENCE.md
 │   ├── scripts/
-│   │   ├── agy-hd.sh          # Quản lý subagent qua herdr (TUI)
-│   │   ├── agy-sub.sh         # Runner headless
-│   │   ├── agy-fan.sh         # Chạy fan-out song song headless
-│   │   ├── agy-ctl.sh         # CLI điều khiển job headless
-│   │   ├── selftest.sh        # Test suite tự động cho runner headless
-│   │   └── selftest-hd.sh     # Test suite tự động cho herdr runner
+│   │   ├── agy-hd.sh          # Primary runner via herdr multiplexer (TUI)
+│   │   ├── agy-sub.sh         # Headless single-job runner
+│   │   ├── agy-fan.sh         # Headless parallel runner
+│   │   ├── agy-ctl.sh         # Job lifecycle CLI controller
+│   │   ├── selftest.sh        # Headless automated test suite
+│   │   └── selftest-hd.sh     # Herdr integration automated test suite
 │   └── systemd/
 │       ├── agy-hd-tick.service
-│       └── agy-hd-tick.timer  # Timer giám sát trạng thái & quota mỗi phút
-├── agy-parallel/
-│   └── SKILL.md               # Hướng dẫn fan-out đa subagent
-├── agy-review/
-│   ├── SKILL.md               # Quy trình review độc lập
-│   └── schema.json            # JSON schema cấu trúc kết quả review
-└── claude-task-id/
-    ├── SKILL.md               # Cấp phát nhãn và ID phiên
+│       └── agy-hd-tick.timer  # 1-minute watchdog timer & quota auto-restart
+├── agy-parallel/              # Multi-agent fan-out orchestration skill
+│   └── SKILL.md
+├── agy-review/                # Second-opinion code review skill
+│   ├── SKILL.md
+│   └── schema.json            # JSON schema validating review findings
+└── claude-task-id/            # Session ID & workspace naming skill
+    ├── SKILL.md
     └── scripts/
-        └── agy-id.sh          # Quản lý bảng map ID và session
+        └── agy-id.sh          # Maps session IDs to #100..#999 task identifiers
 ```
