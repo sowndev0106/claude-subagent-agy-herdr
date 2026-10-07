@@ -1,0 +1,11 @@
+# OS & editor artifacts
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+
+# Temporary & test caches
+.cache/
+__pycache__/
+*.tmp
