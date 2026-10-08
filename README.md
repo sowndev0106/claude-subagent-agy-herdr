@@ -52,30 +52,71 @@ Subagents can occasionally stall or hit API rate limits (such as Google Antigrav
 
 ---
 
-## 👥 Multiple Accounts (`agy-accounts`)
+## 👥 Multiple Accounts (`agy-accounts`, `agy-login`, `agy-quota`, `agy-switch`)
 
 Each Google account is an **agy-p profile** (`~/.agy-profiles/<name>`; `main` is `~/.gemini`) with its own OAuth token.
-Skills, plugins, MCP config and **conversations are shared**, so any conversation can be resumed under another account.
+Skills, plugins, MCP config and **conversations are shared**, so any conversation can be resumed under another account,
+and agy-hd moves a job to another account when its quota runs out.
 
-```bash
-agy-p add                  # prints a login URL; open it, pick the account, then: agy-p code <session> <code>
-agy-p ls                   # profiles and emails (* = default)
-agy-p usage                # weekly + 5-hour Gemini / Claude quota left per account
-agy-p dash                 # visual HTML quota dashboard (opens in the browser)
-agy-p default work         # default account for new runs
-agy-hd start -u work ...   # pin a job to an account; omit -u to auto-pick
-agy-p whoami               # which account this terminal / plain agy uses
-agy-p switch --auto        # make the account with the most quota the default
-agy-hd switch <job> work   # move a job to another account, same conversation
-agy-p remote <host> add    # log in on another machine over ssh (link printed here)
-agy-p doctor               # health check
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dashboard-dark.png">
+  <img alt="agy-p dash: quota per account (Gemini / Claude, weekly and 5-hour), default account and the account new jobs will use" src="docs/screenshots/dashboard-light.png">
+</picture>
+
+<sub>`agy-p dash` (demo data). Live terminal view: `agy-p top`</sub>
+
+<img alt="agy-p top: live quota bars per account in the terminal" src="docs/screenshots/agy-p-top.png" width="560">
+
+### Log in (no agy UI needed)
+
+```text
+$ agy-p add                         # run it in the background from Claude Code, or in a terminal
+Phiên đăng nhập: 9b61   (gửi mã: agy-p code 9b61 <mã>)
+URL: https://accounts.google.com/o/oauth2/auth?...&prompt=select_account%20consent...
+$ agy-p code 9b61 4/0AXlqoi...      # paste the code shown by antigravity.google/oauth-callback
+Profile 'work' đã đăng nhập: work@example.com     # profile name comes from the email
 ```
 
-* **Auto-pick** (`agy-p pick`, used by `agy-hd start/fan` and `agy-sub` without `-u`): the default profile while it has ≥ 20 % Gemini quota and < 2 open jobs, otherwise the account with the best `quota / (1 + open jobs)`; accounts under 5 % are skipped and profiles sharing an email count once.
-* **Quota failover**: when the tick sees `QUOTA`, the job restarts on another account with quota and resumes the same conversation.
-* agy's built-in `invoke_subagent` and nested `agy` calls inside a job run on the job's account (a PATH shim pins `--gemini_dir`).
-* How it works: agy stores the token in a file only when an SSH variable is set, otherwise in one gnome-keyring entry shared by every profile. agy-p always sets `SSH_CONNECTION` and passes agy's hidden `--gemini_dir` flag. Re-check after `agy update`: `agy-p <new-profile> models` must say "Please sign in".
-* Switch the default with `agy-p default`, not `/logout` + `/login` in `~/.gemini`: another running session refreshes and writes the old account back.
+On another machine over ssh (agy + agy-p installed there): `agy-p remote <host> add`, then
+`agy-p remote <host> code <session> <code>`. Move an account that is already logged in: `agy-p remote <host> push|pull <profile>`,
+or `agy-p export <profile> file.tgz` / `agy-p import file.tgz` (the file contains the login token: keep it private).
+
+### Commands
+
+| `agy-p …` | What it does |
+|---|---|
+| `add [name]`, `code <session> <code>` | Hidden login: prints the URL, takes the code; `add -i` opens the agy UI instead |
+| `ls` · `whoami` | Profiles and emails (`*` = default) · account of this terminal, of plain `agy` here, and its quota |
+| `usage [--tsv]` · `dash` · `top` | Quota table (scriptable TSV with cache) · HTML dashboard · live terminal bars |
+| `default <p>` / `switch <p>` / `switch --auto` | Default account for new runs; `--auto` = account with the most Gemini quota |
+| `use <p>` | This terminal only: `eval "$(agy-p use work)"` |
+| `<p> [agy args]` · `best [agy args]` | Run agy on a profile · on the account with the most quota per open job |
+| `rename <old> <new>` · `relogin <p>` · `rm <p>` | Rename (refused while agy runs on it) · log in again, old token restored on failure · remove |
+| `export` / `import` / `remote <host> …` | Move accounts between machines; run any agy-p command over ssh (`AGY_SSH_OPTS="-p 2222"`) |
+| `doctor` | Checks agy, the hidden `--gemini_dir` flag, shim, every profile, quota readability, agy-hd, timer, cas session |
+| `completion zsh\|bash` | Tab completion: `source <(agy-p completion zsh)` |
+
+| `agy-hd …` | Multi-account behaviour |
+|---|---|
+| `start` / `fan` `-u <p>` | Pin jobs to an account; without `-u` the account is auto-picked (`ACCOUNT=` line, `account` in ACCESS) |
+| `switch <job> [p] [-f]` | Move a job to another account, same conversation (`-f` interrupts a running turn first) |
+| `accounts` | Accounts, quota and the jobs (running / done) on each |
+| `tick` (timer, every minute) | `QUOTA` → restart on another account with quota, resume the same conversation |
+
+* **Auto-pick** (`agy-p pick`): the default profile while it has ≥ 20 % Gemini quota and < 2 open jobs, otherwise the account with the best `min(weekly, 5h) / (1 + open jobs)`; accounts under 5 % are skipped and profiles sharing an email count once.
+* agy's built-in `invoke_subagent` and nested `agy` calls inside a job run on the job's account (a PATH shim pins `--gemini_dir`). agy-hd waits while the status bar shows `N subagent(s)`, so a job waiting on a subagent is not reported as done.
+* Per-job lock: the tick and manual `park` / `resume` / `restart` / `switch` / `interrupt` / `close` never change the same job at the same time.
+* How it works: agy stores the token in a file only when an SSH variable is set, otherwise in one gnome-keyring entry shared by every profile. agy-p always sets `SSH_CONNECTION` and passes agy's hidden `--gemini_dir` flag. Re-check after `agy update` with `agy-p doctor`.
+* Switch the default with `agy-p switch`, not `/logout` + `/login` in `~/.gemini`: another running session refreshes its token and writes the old account back.
+
+### Tests (2026-10-08, real accounts, herdr session `cas`)
+
+| Suite | Result |
+|---|---|
+| `selftest.sh` (agy-sub / agy-ctl / agy-fan) from a fresh clone of this repo | 29 / 29 PASS |
+| `agy-accounts/tests/concurrency.sh`: 4 parallel `start`, job lock (`park` waits, `switch` + `park` serialize), 4 simultaneous `resume` while `tick` runs | 7 / 7 PASS |
+| `agy-accounts/tests/e2e-accounts.sh`: `-u`, auto-pick, `fan` spread, subagent wait, quota failover with the same conversation, `switch`, immediate park/resume, nested agy, `agy-sub -u`, `accounts` | 10 / 10 PASS |
+| Cross-account `switch` and `fan` split over two accounts (needs two accounts with quota at test time) | PASS earlier the same day |
 
 ---
 

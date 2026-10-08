@@ -67,6 +67,14 @@ Hết quota giữa chừng: tick của agy-hd chuyển job sang account khác v�
 - `agy-p rm` chỉ xoá token/settings/log của profile; hội thoại ở kho chung vẫn còn.
 - Tab/workspace herdr cho agy luôn ở session `cas` (dùng agy-hd), không mở trong session của người dùng.
 
+## Test lại sau khi sửa script (gọi agy thật, chạy trong session cas)
+
+- `agy-subagent/scripts/selftest.sh`: agy-sub / agy-ctl / agy-fan (~5 phút).
+- `agy-accounts/tests/concurrency.sh`: 4 start song song, khoá job, resume đồng loạt khi tick chạy (~8 phút).
+- `E2E_ACCOUNT=<p> E2E_EXHAUSTED=<p hết quota 5h> agy-accounts/tests/e2e-accounts.sh`: -u, tự chọn, fan, chờ subagent,
+  đổi account khi hết quota, switch, park/resume, agy lồng, agy-sub (~15 phút).
+- Kết quả phụ thuộc quota lúc chạy: fan chỉ chia nhiều account khi account thứ hai còn ≥ 1/4 quota của account tốt nhất.
+
 ## Cơ chế (khi cần sửa)
 
 - agy chọn chỗ lưu token: có biến `SSH_CONNECTION`/`SSH_CLIENT`/`SSH_TTY` → file trong gemini dir; không có → gnome-keyring
