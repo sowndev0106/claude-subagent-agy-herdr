@@ -89,12 +89,20 @@ if ([string]::IsNullOrWhiteSpace($Prompt)) {
 }
 
 # 2. Kiểm tra công cụ và thư mục làm việc
-$agyCmd = Get-Command "agy.exe" -ErrorAction SilentlyContinue
-if (-not $agyCmd) { $agyCmd = Get-Command "agy.cmd" -ErrorAction SilentlyContinue }
-if (-not $agyCmd) { $agyCmd = Get-Command "agy" -ErrorAction SilentlyContinue }
-
+# Chỉ chạy agy.exe. Một agy.cmd/.bat sẽ được Windows chạy qua cmd.exe, và cmd.exe đọc lại cả dòng lệnh:
+# prompt chứa & | > ^ thành lệnh shell (chèn lệnh). Format-Arg bên dưới chỉ đúng cho file .exe.
+$agyCmd = Get-Command "agy.exe" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $agyCmd) {
-    [Console]::Error.WriteLine("agy-sub: không thấy agy trong PATH")
+    $other = Get-Command "agy" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($other) {
+        [Console]::Error.WriteLine("agy-sub: chỉ chạy agy.exe; thấy '$($other.Source)' (.cmd/.bat/.ps1 sẽ để cmd.exe đọc lại prompt). Thêm thư mục chứa agy.exe vào PATH.")
+    } else {
+        [Console]::Error.WriteLine("agy-sub: không thấy agy.exe trong PATH")
+    }
+    exit 2
+}
+if ($agyCmd.Source -notmatch '\.exe$') {
+    [Console]::Error.WriteLine("agy-sub: '$($agyCmd.Source)' không phải file .exe; từ chối chạy để tránh chèn lệnh qua cmd.exe")
     exit 2
 }
 

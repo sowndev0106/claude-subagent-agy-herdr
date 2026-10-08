@@ -57,6 +57,7 @@ Bộ script headless có sẵn bản chạy trực tiếp trên Windows trong `s
 - `agy-fan.ps1` & `agy-fan.cmd`: Chạy song song nhiều task (worker pool tối đa 4 subagents đồng thời), xuất bảng `SUMMARY.tsv`.
 - `agy-id.ps1` & `agy-id.cmd`: Cấp số phiên và nhãn nhiệm vụ cho Claude Code trên Windows.
 - **Không yêu cầu cài `jq` hay `bash`**: Sử dụng hoàn toàn bộ xử lý JSON (`ConvertFrom-Json`) và MD5 checksum của PowerShell / .NET 5.1+.
+- **An toàn khi truyền prompt**: `agy-sub.ps1` chỉ chạy `agy.exe` (không chạy `agy.cmd`/`.bat`, vì cmd.exe đọc lại dòng lệnh và prompt chứa `& | > ^` thành lệnh). Các wrapper `.cmd` vẫn đi qua cmd.exe, nên prompt không do bạn viết thì truyền bằng file (`-f prompt.md`), hoặc gọi thẳng `agy-sub.ps1` từ PowerShell.
 - **Cách dùng trên Windows**: Thêm đường dẫn thư mục `scripts/` vào biến môi trường `PATH` (User hoặc System PATH). Sau đó trong PowerShell hoặc CMD / Claude Code, chỉ cần gõ `agy-sub`, `agy-ctl`, `agy-fan` như bình thường.
 
 ## Cờ agy-sub.sh / agy-sub.ps1

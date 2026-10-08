@@ -41,6 +41,16 @@ param(
     [switch]$Carry
 )
 
+
+function Format-Arg([string]$arg) {
+    # Quy tắc trích dẫn của CommandLineToArgvW (đúng cho powershell.exe / file .exe); không dùng cho .cmd/.bat
+    if ([string]::IsNullOrEmpty($arg)) { return '""' }
+    if ($arg -notmatch '[\s"]') { return $arg }
+    $escaped = [regex]::Replace($arg, '(\\*)(")', { param($m) $m.Groups[1].Value + $m.Groups[1].Value + '\"' })
+    $escaped = [regex]::Replace($escaped, '(\\+)$', { param($m) $m.Groups[1].Value + $m.Groups[1].Value })
+    return '"' + $escaped + '"'
+}
+
 Set-StrictMode -Off
 $ErrorActionPreference = "Stop"
 
@@ -100,17 +110,17 @@ function Start-TaskProcess($taskFile) {
     $argsList.Add("-ExecutionPolicy")
     $argsList.Add("Bypass")
     $argsList.Add("-File")
-    $argsList.Add("`"$subScript`"")
+    $argsList.Add($subScript)
     $argsList.Add("-n")
-    $argsList.Add("`"$taskId`"")
+    $argsList.Add($taskId)
     $argsList.Add("-f")
-    $argsList.Add("`"$($taskFile.FullName)`"")
+    $argsList.Add(($taskFile.FullName))
     $argsList.Add("-d")
-    $argsList.Add("`"$WorkDir`"")
+    $argsList.Add($WorkDir)
     $argsList.Add("-t")
     $argsList.Add("$Timeout")
     $argsList.Add("-o")
-    $argsList.Add("`"$jsonFile`"")
+    $argsList.Add($jsonFile)
 
     if ($ReadOnly) { $argsList.Add("-R") }
     if ($Worktree) { $argsList.Add("-W") }
@@ -118,7 +128,7 @@ function Start-TaskProcess($taskFile) {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = "powershell.exe"
-    $psi.Arguments = $argsList -join " "
+    $psi.Arguments = ($argsList | ForEach-Object { Format-Arg $_ }) -join " "
     $psi.WorkingDirectory = $WorkDir
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
