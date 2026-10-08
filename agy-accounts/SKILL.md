@@ -1,6 +1,6 @@
 ---
 name: agy-accounts
-description: Manage several Google accounts for agy (Antigravity CLI) as agy-p profiles - log in without opening the agy UI (user only clicks a link and sends back the code), list accounts, check each account's Gemini/Claude quota, set the default account, remove accounts, and run agy or agy-hd jobs on a chosen or auto-picked account. Use when the user says "thêm account agy", "đăng nhập agy", "login account", "xem quota agy", "account nào còn quota", "đổi account mặc định", "xoá account agy", "agy hết quota", "chạy bằng account X", or mentions agy-p / profile.
+description: Manage several Google accounts for agy (Antigravity CLI) as agy-p profiles - log in without opening the agy UI (user only clicks a link and sends back the code), list accounts, check each account's Gemini/Claude quota, set the default account, remove accounts, and run agy or agy-hd jobs on a chosen or auto-picked account. Use when the user says "thêm account agy", "đăng nhập agy", "login account", "xem quota agy", "xem limit account", "dashboard quota", "account nào còn quota", "đổi account mặc định", "xoá account agy", "agy hết quota", "chạy bằng account X", or mentions agy-p / profile.
 ---
 
 # agy-accounts: nhiều account cho agy
@@ -14,10 +14,14 @@ agy tự refresh. Skills/plugins/MCP và **hội thoại dùng chung** mọi pro
 ```bash
 agy-p ls                      # profile + email, * = mặc định
 agy-p usage                   # quota Gemini/Claude tuần + 5 giờ của từng account (~6 s, chạy song song)
+agy-p dash                    # trang HTML trực quan (mở trình duyệt): quota từng account, account mặc định, account job mới sẽ dùng
 agy-p default work            # đổi account mặc định (chỉ áp cho lần chạy MỚI)
 agy-p work -p "..."           # chạy agy bằng account đó
 agy-hd start -u work …        # job agy-hd trên account đó; bỏ -u = tự chọn (skill agy-subagent)
 ```
+
+Người dùng muốn "xem limit" / "dashboard": chạy `agy-p dash --no-open --fragment <scratchpad>/agy-quota-board.html`
+rồi đăng file fragment bằng Artifact (cùng đường dẫn để giữ URL); bản trên máy ở `~/.agy-profiles/dashboard.html`.
 
 ## Đăng nhập account mới (workflow)
 

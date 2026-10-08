@@ -1,0 +1,163 @@
+<title>Agy Quota Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Figtree:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: summary strip on top, then one card per Google account (profiles sharing an email = one card),
+   each card = two model families × two quota windows as meters; full table underneath. */
+:root {
+  --bg: #f4f6f7; --surface: #ffffff; --ink: #15191c; --muted: #5b656d; --line: #dde2e6;
+  --track: #e7ebee; --accent: #0e7c74; --accent-soft: #dff2ef;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "Figtree", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111416; --surface: #191d20; --ink: #e6e9eb; --muted: #98a2aa; --line: #2b3135;
+  --track: #2a3034; --accent: #3cc3b5; --accent-soft: #163a37; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #111416; --surface: #191d20; --ink: #e6e9eb; --muted: #98a2aa; --line: #2b3135;
+  --track: #2a3034; --accent: #3cc3b5; --accent-soft: #163a37; color-scheme: dark }
+
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); }
+.wrap { max-width: 1180px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 48px; display: grid; gap: 28px; }
+h1, h2 { font-family: var(--display); text-wrap: balance; margin: 0; }
+h1 { font-size: 30px; letter-spacing: -0.01em; }
+h2 { font-size: 18px; }
+.num, td.n, .when { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+
+header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between; }
+header .meta { color: var(--muted); font-size: 13px; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 4px; min-width: 0; }
+.tile .big { font-family: var(--display); font-size: 19px; font-weight: 700; overflow-wrap: anywhere; line-height: 1.3; }
+.tile .sub { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.tile.pick { background: var(--accent-soft); border-color: transparent; }
+.tile.pick .big { color: var(--accent); }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: grid; gap: 16px; min-width: 0; }
+.card.is-default { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.card-head { display: grid; gap: 6px; min-width: 0; }
+.email { font-family: var(--display); font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-family: var(--mono); }
+.chip.default { border-color: var(--accent); color: var(--accent); font-family: var(--body); font-weight: 600; }
+.chip.jobs { font-family: var(--body); }
+.family { display: grid; gap: 10px; }
+.family-name { font-size: 13px; font-weight: 600; color: var(--muted); }
+.meter { display: grid; grid-template-columns: 74px 1fr auto; gap: 4px 12px; align-items: center; }
+.meter .label { font-size: 13px; }
+.bar { height: 10px; background: var(--track); border-radius: 5px; overflow: hidden; }
+.bar > i { display: block; height: 100%; border-radius: 5px; min-width: 2px; }
+.meter .val { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 500; text-align: right; min-width: 3.5ch; }
+.meter .status { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12.5px; color: var(--muted); }
+.meter .status .when { font-family: var(--body); font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+.s-good { --s: var(--good); } .s-warning { --s: var(--warning); } .s-serious { --s: var(--serious); } .s-critical { --s: var(--critical); } .s-none { --s: var(--track); }
+.bar > i, .dot { background: var(--s); }
+.unlogged { color: var(--muted); font-size: 14px; }
+
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+td.n { text-align: right; }
+tr:last-child td { border-bottom: 0; }
+footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--track); padding: 1px 6px; border-radius: 4px; }
+@media (max-width: 420px) { .meter { grid-template-columns: 64px 1fr auto; } h1 { font-size: 25px; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">Antigravity CLI · agy-p</div>
+      <h1>Quota các account agy</h1>
+    </div>
+    <div class="meta" id="meta"></div>
+  </header>
+  <section class="summary" id="summary" aria-label="Tóm tắt"></section>
+  <section aria-label="Từng account">
+    <div class="cards" id="cards"></div>
+  </section>
+  <section aria-label="Bảng số liệu" style="display:grid;gap:10px">
+    <h2>Bảng số liệu</h2>
+    <div class="table-wrap"><table id="table"></table></div>
+  </section>
+  <footer>
+    <div>Làm mới: <code>agy-p dash</code> · Xem trong terminal: <code>agy-p usage</code> · Đổi account mặc định: <code>agy-p default &lt;profile&gt;</code></div>
+    <div>Màu: xanh ≥ 50% · vàng 20–49% · cam 5–19% · đỏ dưới 5% (agy-hd không tự chọn account dưới 5% quota Gemini).</div>
+  </footer>
+</div>
+
+<script>
+const DATA = /*DATA*/{"generated":"2026-10-08T09:30:00Z","default":"main","pick":"work","accounts":[{"email":"you@example.com","profiles":["main"],"jobs":0,"limits":{"gemini_week":{"pct":62,"reset":"2026-10-12T06:00:00Z"},"gemini_5h":{"pct":90,"reset":"2026-10-08T12:00:00Z"},"claude_week":{"pct":40,"reset":null},"claude_5h":{"pct":-2,"reset":null}}}],"unlogged":[]}/*END*/;
+
+const WINDOWS = [
+  ["Gemini", [["gemini_week", "Tuần"], ["gemini_5h", "5 giờ"]]],
+  ["Claude & GPT", [["claude_week", "Tuần"], ["claude_5h", "5 giờ"]]],
+];
+function status(p) {
+  if (p === -2) return ["s-none", "không có gói"];
+  if (p < 0) return ["s-none", "không đọc được"];
+  if (p >= 50) return ["s-good", "còn nhiều"];
+  if (p >= 20) return ["s-warning", "đang vơi"];
+  if (p >= 5) return ["s-serious", "sắp hết"];
+  return ["s-critical", "hết"];
+}
+function fmtTime(iso) {  // "T5 08/10 18:44", giờ của máy người xem
+  if (!iso) return "";
+  const d = new Date(iso); if (isNaN(d)) return "";
+  const p = n => String(n).padStart(2, "0");
+  return ["CN", "T2", "T3", "T4", "T5", "T6", "T7"][d.getDay()] + " " + p(d.getDate()) + "/" + p(d.getMonth() + 1) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+function fmtLeft(iso) {
+  if (!iso) return "";
+  let s = Math.round((new Date(iso) - Date.now()) / 1000); if (isNaN(s)) return "";
+  if (s <= 0) return "đã tới giờ hồi";
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return "còn " + (d ? d + " ngày " : "") + (d || h ? h + " giờ " : "") + (d ? "" : m + " phút");
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const gem = a => { const w = a.limits.gemini_week.pct, f = a.limits.gemini_5h.pct; return (w < 0 || f < 0) ? -1 : Math.min(w, f); };
+
+function render() {
+  const accts = DATA.accounts;
+  const def = accts.find(a => a.profiles.includes(DATA.default));
+  const pick = accts.find(a => a.profiles.includes(DATA.pick));
+  const usable = accts.filter(a => gem(a) >= 5).length;
+  const resets = accts.map(a => a.limits.gemini_5h).filter(l => l.pct < 50 && l.reset).map(l => l.reset).sort();
+  document.getElementById("meta").innerHTML = "Lấy lúc <span class=\"when\">" + esc(fmtTime(DATA.generated)) + "</span>";
+  document.getElementById("summary").innerHTML = [
+    ["tile", "Account mặc định", def ? def.email : DATA.default, "profile " + DATA.default + (def ? " · Gemini còn " + Math.max(gem(def), 0) + "%" : "")],
+    ["tile pick", "Job mới sẽ chạy trên", pick ? pick.email : "không account nào đủ quota", pick ? "profile " + DATA.pick + " · Gemini còn " + gem(pick) + "%" : "mọi account dưới 5% Gemini"],
+    ["tile", "Account dùng được", usable + " / " + accts.length, "còn ≥ 5% quota Gemini (tuần và 5 giờ)"],
+    ["tile", "Quota 5 giờ hồi sớm nhất", resets.length ? fmtLeft(resets[0]).replace(/^còn /, "") : "không có", resets.length ? fmtTime(resets[0]) : "mọi account còn ≥ 50% quota 5 giờ"],
+  ].map(([cls, k, v, sub]) => `<div class="${cls}"><div class="eyebrow">${esc(k)}</div><div class="big">${esc(v)}</div><div class="sub">${esc(sub)}</div></div>`).join("");
+
+  document.getElementById("cards").innerHTML = accts.map(a => {
+    const isDef = a.profiles.includes(DATA.default);
+    const chips = a.profiles.map(p => `<span class="chip">${esc(p)}</span>`).join("")
+      + (isDef ? `<span class="chip default">mặc định</span>` : "")
+      + (a.jobs ? `<span class="chip jobs">${a.jobs} job agy-hd đang mở</span>` : "");
+    const fams = WINDOWS.map(([fam, wins]) => `<div class="family"><div class="family-name">${esc(fam)}</div>` + wins.map(([key, name]) => {
+      const l = a.limits[key] || { pct: -1 }; const [cls, word] = status(l.pct); const pct = Math.max(l.pct, 0);
+      const when = l.reset && l.pct >= 0 ? `<span class="when" title="${esc(fmtTime(l.reset))}">hồi ${esc(fmtTime(l.reset))} · ${esc(fmtLeft(l.reset))}</span>` : "";
+      return `<div class="meter ${cls}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="${esc(fam + " " + name)}">
+        <span class="label">${esc(name)}</span><div class="bar"><i style="width:${l.pct < 0 ? 0 : pct}%"></i></div>
+        <span class="val">${l.pct < 0 ? "–" : pct + "%"}</span>
+        <div class="status"><span><span class="dot"></span>${esc(word)}</span>${when}</div></div>`;
+    }).join("") + `</div>`).join("");
+    return `<article class="card${isDef ? " is-default" : ""}"><div class="card-head"><div class="email">${esc(a.email)}</div><div class="chips">${chips}</div></div>${fams}</article>`;
+  }).join("") + (DATA.unlogged.length ? `<div class="unlogged">Chưa đăng nhập: ${DATA.unlogged.map(esc).join(", ")} (<code>agy-p add</code>)</div>` : "");
+
+  const cols = [["gemini_week", "Gemini tuần"], ["gemini_5h", "Gemini 5 giờ"], ["claude_week", "Claude tuần"], ["claude_5h", "Claude 5 giờ"]];
+  document.getElementById("table").innerHTML = "<thead><tr><th>Account</th><th>Profile</th>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "<th>Gemini 5 giờ hồi</th></tr></thead><tbody>"
+    + accts.map(a => `<tr><td>${esc(a.email)}</td><td>${esc(a.profiles.join(", "))}</td>` + cols.map(([k]) => { const p = (a.limits[k] || {}).pct; return `<td class="n">${p === -2 ? "không có" : p < 0 || p === undefined ? "–" : p + "%"}</td>`; }).join("")
+      + `<td class="when">${esc(fmtTime(a.limits.gemini_5h.reset))}</td></tr>`).join("") + "</tbody>";
+}
+render();
+setInterval(render, 30000);
+</script>

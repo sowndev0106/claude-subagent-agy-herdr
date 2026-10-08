@@ -58,6 +58,7 @@ Skills, plugins, MCP config and **conversations are shared**, so any conversatio
 agy-p add                  # prints a login URL; open it, pick the account, then: agy-p code <session> <code>
 agy-p ls                   # profiles and emails (* = default)
 agy-p usage                # weekly + 5-hour Gemini / Claude quota left per account
+agy-p dash                 # visual HTML quota dashboard (opens in the browser)
 agy-p default work         # default account for new runs
 agy-hd start -u work ...   # pin a job to an account; omit -u to auto-pick
 ```
@@ -181,5 +182,6 @@ claude-subagent-agy-herdr/
     └── scripts/
         ├── agy-p.sh           # Profiles: add/ls/usage/default/pick/env/rm, run agy on a profile
         ├── login.py           # Hidden login: drives the agy TUI in a pty, prints the OAuth URL
+        ├── dashboard.html     # Template for agy-p dash
         └── shim/agy           # Keeps nested agy calls on the same profile
 ```

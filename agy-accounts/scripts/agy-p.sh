@@ -7,6 +7,7 @@
 #   agy-p code <phiên> <mã>    đưa mã xác thực vào phiên add đang chờ (khi add chạy nền)
 #   agy-p ls                   các profile, email; dấu * là profile mặc định
 #   agy-p usage [--tsv] [--max-age giây] [tên...]   quota còn lại (chạy /usage song song; --tsv cho script, có cache)
+#   agy-p dash [--max-age giây] [--no-open]   trang HTML trực quan: quota từng account, account mặc định, account job mới sẽ dùng
 #   agy-p default [tên]        xem / đổi profile mặc định (dùng khi không chỉ định profile; agy-hd ưu tiên nó)
 #   agy-p pick [--load tên=n]... [--exclude tên]... [--exclude-email email]... [--min %]
 #                              in tên profile nên dùng: ưu tiên mặc định, không thì profile còn nhiều quota Gemini nhất
@@ -198,7 +199,8 @@ cmd_env() {
 }
 
 # usage: chạy `/usage` của từng profile song song. Kết quả máy đọc (cũng là cache $CACHE), mỗi dòng:
-# profile email gemini_tuần gemini_5h claude_tuần claude_5h reset_gemini_tuần reset_gemini_5h  (% số nguyên, -1 = không rõ)
+# profile email gemini_tuần gemini_5h claude_tuần claude_5h reset_gemini_tuần reset_gemini_5h reset_claude_tuần reset_claude_5h
+# (% số nguyên; -1 = không đọc được, -2 = không có gói/disabled; reset "-" = không rõ)
 fetch_usage() {  # $1=thư mục tạm, còn lại: profile
   local tmp=$1 p; shift
   for p in "$@"; do
@@ -220,8 +222,8 @@ for n in names:
             if len(f) >= 3: rows[(f[0], f[1])] = (f[2], f[3] if len(f) > 3 else "")
     def pct(k):
         v = rows.get(k, ("", ""))[0].rstrip("%")
-        return v if v.isdigit() else "-1"
-    print("\t".join([n, email or "-"] + [pct(k) for k in keys] + [rows.get(keys[0], ("", "-"))[1] or "-", rows.get(keys[1], ("", "-"))[1] or "-"]))
+        return v if v.isdigit() else ("-2" if v == "disabled" else "-1")
+    print("\t".join([n, email or "-"] + [pct(k) for k in keys] + [rows.get(k, ("", "-"))[1] or "-" for k in keys]))
 EOF
 }
 usage_tsv() {  # $1=max-age giây (0 = luôn lấy mới); in TSV của mọi profile
@@ -249,10 +251,10 @@ import sys, datetime
 def local(ts):
     try: return " (" + datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().strftime("%d/%m %H:%M") + ")"
     except ValueError: return ""
-def cell(v, r=""): return f"{('?' if v == '-1' else v + '%') + (local(r) if r and r != '-' else ''):20}"
+def cell(v, r=""): return f"{('?' if v == '-1' else 'không có' if v == '-2' else v + '%') + (local(r) if r and r != '-' else ''):20}"
 print(f"{'PROFILE':16} {'EMAIL':32} {'GEMINI TUẦN':20} {'GEMINI 5H':20} {'CLAUDE TUẦN':12} {'CLAUDE 5H':12}")
 for line in open(sys.argv[1]):
-    n, e, gw, g5, cw, c5, rw, r5 = line.rstrip("\n").split("\t")
+    n, e, gw, g5, cw, c5, rw, r5, *_ = line.rstrip("\n").split("\t")
     if e == "-": print(f"{n:16} (chưa đăng nhập)"); continue
     print(f"{n:16} {e:32} {cell(gw, rw)} {cell(g5, r5)} {cell(cw)[:12]} {cell(c5)[:12]}")
 print("(giờ trong ngoặc = lúc quota hồi lại, giờ máy; ? = không đọc được)")
@@ -295,6 +297,50 @@ print(max(cands, key=lambda c: (c["q"] / (1 + c["load"]), c["q"]))["name"])
     || die "không còn profile nào có quota Gemini >= ${min}% (agy-p usage để xem)"
 }
 
+# dash: trang HTML trực quan (mẫu scripts/dashboard.html), mở bằng trình duyệt. --fragment ghi bản không có
+# <!doctype> (để đăng làm Artifact). Số job = job agy-hd đang mở (chưa DONE/STOPPED/đóng) trên từng profile.
+cmd_dash() {
+  local age=0 out=$ROOT/dashboard.html frag="" open=1
+  while [[ $# -gt 0 ]]; do case $1 in --max-age) age=$2; shift;; --out) out=$2; shift;; --fragment) frag=$2; shift;;
+    --no-open) open=0;; *) die "dash: không hiểu '$1'";; esac; shift; done
+  local tsv pick jobs jd p; tsv=$(usage_tsv "$age")
+  pick=$(cmd_pick --max-age 600 2>/dev/null) || pick=""
+  jobs=$(for jd in "${AGY_HD_JOBS:-$HOME/.cache/agy-hd}"/a-*/meta.env; do [[ -f $jd ]] || continue
+    grep -q '^CLOSED=1' "$jd" && continue; grep -qE '^TICK_STATE=(DONE|STOPPED)$' "$jd" && continue
+    p=$(sed -n 's/^PROFILE=//p' "$jd" | tail -1); [[ -n $p ]] && echo "$p"; done | sort | uniq -c)
+  mkdir -p "$(dirname "$out")"
+  python3 - "$HERE/dashboard.html" "$out" "$frag" "$(default_profile)" "$pick" "$tsv" "$jobs" <<'EOF'
+import sys, json, datetime
+tpl, out, frag, default, pick, tsv, jobs = sys.argv[1:8]
+load = {}
+for line in jobs.splitlines():
+    c, n = line.split(); load[n] = int(c)
+keys = ["gemini_week", "gemini_5h", "claude_week", "claude_5h"]
+by_email, unlogged = {}, []
+for line in tsv.splitlines():
+    f = line.split("\t") + ["-"] * 10
+    n, e = f[0], f[1]
+    if e == "-": unlogged.append(n); continue
+    a = by_email.setdefault(e, {"email": e, "profiles": [], "jobs": 0, "limits": {}})
+    a["profiles"].append(n); a["jobs"] += load.get(n, 0)
+    if not a["limits"]:
+        for i, k in enumerate(keys):
+            r = f[6 + i]
+            a["limits"][k] = {"pct": int(f[2 + i]) if f[2 + i].lstrip("-").isdigit() else -1, "reset": None if r in ("-", "") else r}
+rank = lambda a: (default not in a["profiles"], "main" not in a["profiles"], a["email"])
+data = {"generated": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "default": default, "pick": pick or None, "accounts": sorted(by_email.values(), key=rank), "unlogged": unlogged}
+blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+t = open(tpl, encoding="utf-8").read()
+a, b = t.index("/*DATA*/"), t.index("/*END*/")
+page = t[:a] + "/*DATA*/" + blob + t[b:]
+if frag: open(frag, "w", encoding="utf-8").write(page)
+open(out, "w", encoding="utf-8").write('<!doctype html>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n' + page)
+EOF
+  echo "Dashboard: $out"
+  (( open )) && { xdg-open "$out" >/dev/null 2>&1 & disown 2>/dev/null; } || true
+}
+
 cmd_rm() {
   local yes=0; [[ ${1:-} == -y ]] && { yes=1; shift; }
   local p=${1:-}; valid "$p"
@@ -319,6 +365,7 @@ case ${1:-} in
   default) shift; cmd_default "$@" ;;
   pick)    shift; cmd_pick "$@" ;;
   env)     shift; cmd_env "$@" ;;
+  dash)    shift; cmd_dash "$@" ;;
   email)   shift; valid "${1:-}"; email "$1" ;;
   rm)      shift; cmd_rm "$@" ;;
   ""|-*)   p=$(default_profile); need_login "$p"; prepare "$p"; run_in "$p" "$@" ;;
