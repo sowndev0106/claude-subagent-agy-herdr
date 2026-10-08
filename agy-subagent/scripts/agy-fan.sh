@@ -13,17 +13,17 @@
 # exit 0 = mọi task SUCCESS; 1 = có task lỗi (xem SUMMARY.tsv).
 set -uo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-tasks="" res="" jobs=3 wd="$PWD" tmo=900 ro=() wtf=0 cf=0
-while getopts "i:o:j:d:t:RWC" o; do
+tasks="" res="" jobs=3 wd="$PWD" tmo=900 ro=() wtf=0 cf=0 acct=""
+while getopts "i:o:j:d:t:u:RWC" o; do
   case $o in i) tasks=$OPTARG;; o) res=$OPTARG;; j) jobs=$OPTARG;; d) wd=$OPTARG;;
-    t) tmo=$OPTARG;; R) ro=(-R);; W) wtf=1;; C) cf=1;; *) sed -n '2,14p' "$0"; exit 2;; esac
+    t) tmo=$OPTARG;; u) acct=$OPTARG;; R) ro=(-R);; W) wtf=1;; C) cf=1;; *) sed -n '2,14p' "$0"; exit 2;; esac
 done
 [[ -d $tasks && -n $res ]] || { sed -n '2,14p' "$0"; exit 2; }
 (( jobs > 4 )) && jobs=4   # trần cứng: 4 agy cùng lúc
 mkdir -p "$res"; : >"$res/SUMMARY.tsv"
 
 run_one() {
-  f=$1; id=$(basename "$f" .md); r=(); [[ -n ${ro_str:-} ]] && r=(-R); [[ ${wtf:-0} -eq 1 ]] && r+=(-W); [[ ${cf:-0} -eq 1 ]] && r+=(-C)
+  f=$1; id=$(basename "$f" .md); r=(); [[ -n ${ro_str:-} ]] && r=(-R); [[ ${wtf:-0} -eq 1 ]] && r+=(-W); [[ ${cf:-0} -eq 1 ]] && r+=(-C); [[ -n ${acct:-} ]] && r+=(-u "$acct")
   "$here/agy-sub.sh" -n "$id" -f "$f" -d "$wd" -t "$tmo" -o "$res/$id.json" "${r[@]}" >"$res/$id.out" 2>"$res/$id.err"
   rc=$?
   if jq -e . "$res/$id.json" >/dev/null 2>&1; then
@@ -35,7 +35,7 @@ run_one() {
   fi
 }
 export -f run_one
-export here res wd tmo wtf cf; export ro_str="${ro[*]:-}"  # mảng không export được
+export here res wd tmo wtf cf acct; export ro_str="${ro[*]:-}"  # mảng không export được
 
 ls "$tasks"/*.md | xargs -P "$jobs" -I{} bash -c 'run_one "$1"' _ {}
 sort -o "$res/SUMMARY.tsv" "$res/SUMMARY.tsv"

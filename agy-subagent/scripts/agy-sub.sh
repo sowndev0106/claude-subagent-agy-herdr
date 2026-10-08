@@ -6,6 +6,7 @@
 #   agy-sub.sh -p "prompt"            # hoặc -f prompt.md, hoặc đọc stdin
 #             [-n name]               # tên job (dễ nhớ; id = name-HHMMSS)
 #             [-d workdir]            # cwd của agy (mặc định: $PWD)
+#             [-u profile]            # account agy-p (skill agy-accounts); không có: $AGY_PROFILE, không thì agy-p pick
 #             [-W]                    # chạy trong git worktree riêng (branch agy/<id>), tự commit
 #             [-C]                    # (cần -W) mang thay đổi CHƯA commit của repo vào worktree
 #             [-S]                    # chạy agy với --sandbox (hạn chế terminal)
@@ -26,13 +27,13 @@ set -uo pipefail
 
 MODEL="gemini-3.8-flash-high"
 JOBS="${AGY_JOBS:-$HOME/.cache/agy-jobs}"
-prompt="" pfile="" workdir="$PWD" conv="" schema="" out="" tmo=600 ro=0 wt=0 carry=0 sbx=0 name="job"
+prompt="" pfile="" workdir="$PWD" conv="" schema="" out="" tmo=600 ro=0 wt=0 carry=0 sbx=0 name="job" acct=""
 adddirs=()
-while getopts "p:f:n:d:r:s:a:o:t:RWCS" o; do
+while getopts "p:f:n:d:r:s:a:o:t:u:RWCS" o; do
   case $o in
     p) prompt=$OPTARG ;; f) pfile=$OPTARG ;; n) name=${OPTARG//[^A-Za-z0-9_.-]/_} ;;
     d) workdir=$OPTARG ;; r) conv=$OPTARG ;; s) schema=$OPTARG ;; a) adddirs+=(--add-dir "$OPTARG") ;;
-    o) out=$OPTARG ;; t) tmo=$OPTARG ;; R) ro=1 ;; W) wt=1 ;; C) carry=1 ;; S) sbx=1 ;;
+    o) out=$OPTARG ;; t) tmo=$OPTARG ;; u) acct=$OPTARG ;; R) ro=1 ;; W) wt=1 ;; C) carry=1 ;; S) sbx=1 ;;
     *) sed -n '2,28p' "$0"; exit 2 ;;
   esac
 done
@@ -41,6 +42,19 @@ done
 [[ -z $prompt && ! -t 0 ]] && prompt=$(cat)
 [[ -z $prompt ]] && { echo "agy-sub: thiếu prompt (-p, -f hoặc stdin)" >&2; exit 2; }
 command -v agy >/dev/null || { echo "agy-sub: không thấy agy trong PATH" >&2; exit 2; }
+# Nhiều account (agy-p): chọn profile trong khoá, chia tải theo số job agy-sub đang chạy trên từng profile.
+AGYP=$(command -v agy-p 2>/dev/null || echo "$HOME/.local/bin/agy-p"); prof="" pemail=""
+if [[ -x $AGYP ]]; then
+  mkdir -p "$JOBS"; exec 8>"$JOBS/.pick.lock"; flock 8
+  prof=${acct:-${AGY_PROFILE:-}}
+  if [[ -z $prof ]]; then
+    loads=(); for m in "$JOBS"/*/meta.env; do [[ -f $m ]] || continue; p=$(sed -n "s/^PROFILE=//p" "$m"); pd=$(dirname "$m")
+      [[ -n $p && -f $pd/pid && ! -f $pd/done ]] && kill -0 "$(<"$pd/pid")" 2>/dev/null && loads+=(--load "$p=1"); done
+    prof=$("$AGYP" pick "${loads[@]}" 2>/dev/null) || prof=$("$AGYP" default | awk '{print $1}')
+  fi
+  "$AGYP" env "$prof" >/dev/null || { echo "agy-sub: profile '$prof' không dùng được (agy-p ls)" >&2; exit 2; }
+  pemail=$("$AGYP" email "$prof")
+fi
 [[ -d $workdir ]] || { echo "agy-sub: workdir không tồn tại: $workdir" >&2; exit 2; }
 workdir=$(cd "$workdir" && pwd)
 
@@ -99,16 +113,21 @@ CARRY=$carry
 STARTED=$(date +%s)
 TIMEOUT=$tmo
 RO=$ro
+PROFILE=$prof
+PROFILE_EMAIL=$pemail
 PROMPT_HEAD=$(printf '%s' "$prompt" | head -c 120 | tr '\n"$`\\' ' ')
 EOF
 echo "JOB=$id" >&2   # in sớm để người chạy nền biết id ngay
+[[ -n $prof ]] && echo "ACCOUNT=$prof ($pemail)" >&2
 
 killtree() { local p=$1 c; for c in $(pgrep -P "$p" 2>/dev/null); do killtree "$c"; done; kill -TERM "$p" 2>/dev/null; }
 
 # Chạy nền để lấy PID rồi wait: stop = kill cây tiến trình theo PID này.
 # Timeout bằng watchdog + killtree (GNU timeout chỉ kill agy, lệnh con của agy sống sót thành mồ côi).
-( cd "$workdir" && exec agy "${args[@]}" </dev/null >"$jd/events.jsonl" 2>"$jd/err" ) &
+if [[ -n $prof ]]; then ( cd "$workdir" && exec "$AGYP" "$prof" "${args[@]}" </dev/null >"$jd/events.jsonl" 2>"$jd/err" ) &
+else ( cd "$workdir" && exec agy "${args[@]}" </dev/null >"$jd/events.jsonl" 2>"$jd/err" ) & fi
 pid=$!; echo "$pid" >"$jd/pid"
+[[ -n $prof ]] && flock -u 8
 ( sleep "$tmo"; touch "$jd/timedout"; killtree "$pid"; sleep 3; kill -KILL "$pid" 2>/dev/null ) &
 wd=$!
 wait "$pid"; rc=$?

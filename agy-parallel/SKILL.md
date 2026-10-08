@@ -5,6 +5,8 @@ description: Fan out several independent tasks to multiple agy subagents at once
 
 # Chạy agy song song trong herdr
 
+Nhiều account: `agy-hd fan` không có `-u` tự chia task cho các account còn quota (skill agy-accounts); `-u <profile>` ép mọi task vào một account.
+
 Claude Code lên plan, chia việc, phát cho agy chạy cùng lúc (mỗi task một tab trong workspace `#số tên` của phiên, session herdr `cas`),
 rồi gom, kiểm chứng, merge. Dùng chung `agy-subagent` (đọc nó trước: cách viết prompt, quy tắc ACCESS).
 

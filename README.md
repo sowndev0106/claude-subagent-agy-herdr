@@ -25,6 +25,9 @@ A toolkit and agent skills suite enabling **Claude Code** to orchestrate **Antig
 | **`agy-parallel`** | Fan-out 2–4 independent tasks concurrently across isolated tabs and worktrees. | `agy-hd fan`, `agy-fan` |
 | **`agy-review`** | Solicit an independent read-only second opinion on diffs/code, validated against a JSON schema (`schema.json`). | `agy-sub -R -s schema.json` |
 | **`claude-task-id`** | Allocate and maintain a 3-digit task identifier (`#132 ...`) shared across Claude Code and herdr workspaces. | `agy-id claim`, `agy-id show` |
+| **`agy-accounts`** | Run agy on several Google accounts (one profile each): hidden login, per-account quota, default account, auto-pick and quota failover for jobs. | `agy-p add`, `agy-p usage`, `agy-p default`, `agy-hd start -u` |
+
+Windows: headless runners also ship as PowerShell + CMD wrappers (`agy-sub`, `agy-ctl`, `agy-fan`, `agy-id` `.ps1`/`.cmd`); add the `scripts/` folders to `PATH`.
 
 ---
 
@@ -43,6 +46,27 @@ Subagents can occasionally stall or hit API rate limits (such as Google Antigrav
      * `QUOTA`: Automatically undergoing recovery by scheduler.
      * `STOPPED` / `STALL`: Process halted or hung; inspect logs, interrupt, or resume.
      * `BLOCKED`: Awaiting interactive human input.
+
+---
+
+## 👥 Multiple Accounts (`agy-accounts`)
+
+Each Google account is an **agy-p profile** (`~/.agy-profiles/<name>`; `main` is `~/.gemini`) with its own OAuth token.
+Skills, plugins, MCP config and **conversations are shared**, so any conversation can be resumed under another account.
+
+```bash
+agy-p add                  # prints a login URL; open it, pick the account, then: agy-p code <session> <code>
+agy-p ls                   # profiles and emails (* = default)
+agy-p usage                # weekly + 5-hour Gemini / Claude quota left per account
+agy-p default work         # default account for new runs
+agy-hd start -u work ...   # pin a job to an account; omit -u to auto-pick
+```
+
+* **Auto-pick** (`agy-p pick`, used by `agy-hd start/fan` and `agy-sub` without `-u`): the default profile while it has ≥ 20 % Gemini quota and < 2 open jobs, otherwise the account with the best `quota / (1 + open jobs)`; accounts under 5 % are skipped and profiles sharing an email count once.
+* **Quota failover**: when the tick sees `QUOTA`, the job restarts on another account with quota and resumes the same conversation.
+* agy's built-in `invoke_subagent` and nested `agy` calls inside a job run on the job's account (a PATH shim pins `--gemini_dir`).
+* How it works: agy stores the token in a file only when an SSH variable is set, otherwise in one gnome-keyring entry shared by every profile. agy-p always sets `SSH_CONNECTION` and passes agy's hidden `--gemini_dir` flag. Re-check after `agy update`: `agy-p <new-profile> models` must say "Please sign in".
+* Switch the default with `agy-p default`, not `/logout` + `/login` in `~/.gemini`: another running session refreshes and writes the old account back.
 
 ---
 
@@ -72,7 +96,8 @@ Add the required bash tool executions to `permissions.allow` in `~/.claude/setti
       "Bash(agy-sub:*)",
       "Bash(agy-fan:*)",
       "Bash(agy-ctl:*)",
-      "Bash(agy-id:*)"
+      "Bash(agy-id:*)",
+      "Bash(agy-p:*)"
     ]
   }
 }
@@ -136,6 +161,7 @@ claude-subagent-agy-herdr/
 │   │   ├── agy-sub.sh         # Headless single-job runner
 │   │   ├── agy-fan.sh         # Headless parallel runner
 │   │   ├── agy-ctl.sh         # Job lifecycle CLI controller
+│   │   ├── *.ps1 / *.cmd      # Windows runners (agy-sub, agy-ctl, agy-fan)
 │   │   ├── selftest.sh        # Headless automated test suite
 │   │   └── selftest-hd.sh     # Herdr integration automated test suite
 │   └── systemd/
@@ -146,8 +172,14 @@ claude-subagent-agy-herdr/
 ├── agy-review/                # Second-opinion code review skill
 │   ├── SKILL.md
 │   └── schema.json            # JSON schema validating review findings
-└── claude-task-id/            # Session ID & workspace naming skill
+├── claude-task-id/            # Session ID & workspace naming skill
+│   ├── SKILL.md
+│   └── scripts/
+│       └── agy-id.sh          # Maps session IDs to #100..#999 task identifiers
+└── agy-accounts/              # Multiple Google accounts for agy
     ├── SKILL.md
     └── scripts/
-        └── agy-id.sh          # Maps session IDs to #100..#999 task identifiers
+        ├── agy-p.sh           # Profiles: add/ls/usage/default/pick/env/rm, run agy on a profile
+        ├── login.py           # Hidden login: drives the agy TUI in a pty, prints the OAuth URL
+        └── shim/agy           # Keeps nested agy calls on the same profile
 ```

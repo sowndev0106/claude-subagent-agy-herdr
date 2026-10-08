@@ -13,8 +13,8 @@ nguồn `scripts/agy-hd.sh`). Không gọi `agy` trần.
 
 Phiên Claude Code **không cần** chạy trong herdr; chỉ cần herdr server đang chạy
 (`herdr status server`). Chọn session bằng `HERDR_SESSION` (mặc định `default`).
-Herdr không chạy / cần structured output (`-s` schema) → dùng bản headless
-`agy-sub`/`agy-ctl`/`agy-fan` (xem [REFERENCE.md](REFERENCE.md)).
+Herdr không chạy / môi trường Windows / cần structured output (`-s` schema) → dùng bản headless
+`agy-sub`/`agy-ctl`/`agy-fan` (PowerShell `.ps1` + wrapper `.cmd` trên Windows, xem [REFERENCE.md](REFERENCE.md)).
 
 ## Mô hình herdr: MỘT session `cas`, workspace = phiên Claude Code, tab = subagent
 
@@ -120,6 +120,16 @@ Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab l
   - worktree vẫn còn (`wt-diff`). `close` commit những thay đổi còn dở trong worktree trước khi đóng.
 - **Lưới an toàn:** `tick` (systemd timer, mỗi phút) tự đóng tab của job đã DONE quá `AGY_AUTOCLOSE_MIN` phút (mặc định 15; đặt 0 để tắt), và ghi vào `events.log`. Đừng dựa vào nó: đóng tab ngay sau khi kiểm chứng.
 
+## Nhiều account (skill `agy-accounts`)
+
+- Mỗi job chạy bằng một **profile agy-p** (một Google account, token riêng). `agy-hd start/fan -u <profile>` để chỉ định;
+  không có `-u` thì `agy-p pick` tự chọn: ưu tiên profile mặc định (`agy-p default`) khi nó còn ≥ 20% quota Gemini và
+  đang chạy < 2 job, không thì account còn nhiều quota nhất chia cho số job đang mở trên nó (fan được chia đều).
+- Dòng `ACCOUNT=<profile> (<email>)` khi start, dòng `account :` trong ACCESS, cột `account` trong `STATUS.tsv` / `agy-hd list`.
+- Hội thoại dùng chung mọi profile, nên **resume / restart sang account khác giữ nguyên conversation**.
+  Subagent dùng sẵn của agy (`invoke_subagent`) và lệnh `agy` lồng trong job đều chạy cùng account đó.
+- Xem quota: `agy-p usage`. Thêm account: `agy-p add` (xem skill agy-accounts).
+
 ## Hết hạn mức Antigravity (quota)
 
 - **Dấu hiệu:** màn hình agent hiện `⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h16m…`. Log `~/.gemini/antigravity-cli/log/cli-*.log` ghi `RESOURCE_EXHAUSTED (code 429)`. agy đứng im ở idle/done trong khi việc chưa xong. Gặp lần đầu 2026-10-05, trên cả 4 agent chấm điểm cùng lúc.
@@ -128,7 +138,9 @@ Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab l
   2. mở lại đúng hội thoại cũ (`resume`);
   3. gửi prompt "làm tiếp việc dở, xem lại file đã ghi, không làm lại từ đầu".
   Ngày 2026-10-05 cách này cứu được cả 4 agent: chúng chấm tiếp đúng chỗ dở (125 → 249 nhãn) rồi xong.
-- **tick tự làm việc này** cho job ở trạng thái QUOTA: tối đa 5 lần mỗi job, cách nhau ít nhất 3 phút, mỗi lần ghi vào `events.log`. Sau 5 lần vẫn hết hạn mức thì tick ghi `QUOTA_GAVE_UP`. Lúc đó **báo người dùng**, kèm thời gian "Resets in" trên màn hình, đừng restart vòng vòng.
+- **tick tự làm việc này** cho job ở trạng thái QUOTA: tối đa 5 lần mỗi job, cách nhau ít nhất 3 phút (1 phút nếu job chạy qua agy-p), mỗi lần ghi vào `events.log`.
+  Job chạy qua agy-p thì restart **chuyển sang account khác còn quota** (`QUOTA_EMAILS` trong meta ghi các account đã hết), rồi
+  resume đúng conversation; không còn account nào thì mở lại trên account cũ. Đã e2e 2026-10-08: account hết quota 5 giờ (0%) → account khác, cùng conversation, xong việc. Sau 5 lần vẫn hết hạn mức thì tick ghi `QUOTA_GAVE_UP`. Lúc đó **báo người dùng**, kèm thời gian "Resets in" trên màn hình, đừng restart vòng vòng.
 - Việc có file đầu ra ghi dần (ví dụ labels.jsonl) nên được thiết kế để làm tiếp được: ghi theo lô, có script kiểm tra. Sau khi job DONE, kiểm lại số dòng hoặc chạy script kiểm tra.
 
 ## Viết prompt

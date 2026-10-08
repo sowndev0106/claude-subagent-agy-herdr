@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# shim của agy-p: agy-p đặt thư mục này đầu PATH, nên lệnh `agy ...` chạy lồng bên trong một profile
+# (subagent gọi qua shell, agy-hd...) cũng dùng luôn profile đó. Đã có --gemini_dir thì để nguyên.
+real=${AGY_REAL:-$HOME/.local/bin/agy}
+for a in "$@"; do [[ $a == --gemini_dir* ]] && exec "$real" "$@"; done
+[[ -n ${AGY_GEMINI_DIR:-} ]] && exec "$real" --gemini_dir="$AGY_GEMINI_DIR" "$@"
+exec "$real" "$@"

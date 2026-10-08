@@ -18,7 +18,7 @@ mkdir -p "$CLAUDE_SKILLS_DIR" "$BIN_DIR" "$SYSTEMD_USER_DIR"
 
 # 1. Symlink skills
 echo "==> 1. Symlinking skills to $CLAUDE_SKILLS_DIR..."
-for skill in agy-subagent agy-parallel agy-review claude-task-id; do
+for skill in agy-subagent agy-parallel agy-review claude-task-id agy-accounts; do
   if [ -d "$REPO_DIR/$skill" ]; then
     ln -sfn "$REPO_DIR/$skill" "$CLAUDE_SKILLS_DIR/$skill"
     echo "    ✓ $CLAUDE_SKILLS_DIR/$skill -> $REPO_DIR/$skill"
@@ -27,7 +27,8 @@ done
 
 # 2. Symlink binaries
 echo "==> 2. Symlinking binaries to $BIN_DIR..."
-chmod +x "$REPO_DIR"/agy-subagent/scripts/*.sh "$REPO_DIR"/claude-task-id/scripts/*.sh
+chmod +x "$REPO_DIR"/agy-subagent/scripts/*.sh "$REPO_DIR"/claude-task-id/scripts/*.sh \
+  "$REPO_DIR"/agy-accounts/scripts/agy-p.sh "$REPO_DIR"/agy-accounts/scripts/login.py "$REPO_DIR"/agy-accounts/scripts/shim/agy
 
 ln -sfn "$REPO_DIR/agy-subagent/scripts/agy-hd.sh" "$BIN_DIR/agy-hd"
 echo "    ✓ $BIN_DIR/agy-hd"
@@ -39,6 +40,8 @@ ln -sfn "$REPO_DIR/agy-subagent/scripts/agy-ctl.sh" "$BIN_DIR/agy-ctl"
 echo "    ✓ $BIN_DIR/agy-ctl"
 ln -sfn "$REPO_DIR/claude-task-id/scripts/agy-id.sh" "$BIN_DIR/agy-id"
 echo "    ✓ $BIN_DIR/agy-id"
+ln -sfn "$REPO_DIR/agy-accounts/scripts/agy-p.sh" "$BIN_DIR/agy-p"
+echo "    ✓ $BIN_DIR/agy-p"
 
 # 3. Systemd timer
 echo "==> 3. Setting up systemd watchdog timer..."
@@ -62,7 +65,7 @@ else
   echo "    ✓ $BIN_DIR is in PATH"
 fi
 
-for cmd in agy herdr git jq; do
+for cmd in agy herdr git jq python3; do
   if command -v "$cmd" >/dev/null 2>&1; then
     echo "    ✓ $cmd: $(command -v "$cmd")"
   else
@@ -73,4 +76,4 @@ done
 echo ""
 echo "==> Installation complete!"
 echo "    Add the following to ~/.claude/settings.json (permissions.allow):"
-echo '    "Bash(agy-hd:*)", "Bash(agy-sub:*)", "Bash(agy-fan:*)", "Bash(agy-ctl:*)", "Bash(agy-id:*)"'
+echo '    "Bash(agy-hd:*)", "Bash(agy-sub:*)", "Bash(agy-fan:*)", "Bash(agy-ctl:*)", "Bash(agy-id:*)", "Bash(agy-p:*)"'

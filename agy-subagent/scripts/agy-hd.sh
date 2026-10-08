@@ -8,7 +8,10 @@
 #   agy-hd rename-space "tên"  đổi tên nhiệm vụ + nhãn workspace của phiên Claude này ("#<số> <tên>", số do agy-id cấp)
 #   agy-hd sessions          các session herdr + số workspace;  agy-hd session-stop <tên>  (chỉ session do agy-hd tạo)
 #   agy-hd open <job|wX>     vào xem trực tiếp agent của job (attach) hoặc nhảy tới workspace
-#   agy-hd start -n tên [-d dir] [-W [-C]] [-R] [-A] [-t giây] (-f prompt.md | -p "text")
+#   agy-hd start -n tên [-d dir] [-u profile] [-W [-C]] [-R] [-A] [-t giây] (-f prompt.md | -p "text")
+#       -u profile agy-p chạy job (account riêng). Không có -u: agy-p pick tự chọn (ưu tiên profile mặc định,
+#          không thì account còn nhiều quota nhất, chia đều theo số job đang mở). Hết quota giữa chừng: tick
+#          tự chuyển job sang account khác và resume đúng conversation đó (hội thoại dùng chung mọi profile).
 #       -W worktree riêng (branch agy/<id>)   -C mang theo thay đổi chưa commit (cần -W)
 #       -R chỉ đọc (lời dặn trong prompt)     -A async: không chờ xong, in ACCESS rồi thoát
 #       -P park sau khi DONE (nhả RAM agy). fan mặc định park; fan -K để giữ agent sống
@@ -35,7 +38,7 @@
 #   agy-hd list              các job + trạng thái
 #   agy-hd wt-diff|wt-merge|wt-drop <job>   quản lý worktree của job -W
 #   agy-hd gc [ngày=3] [-y]  đóng workspace + xóa job cũ đã xong, không có thay đổi chưa merge
-#   agy-hd fan -i tasks_dir -o results_dir [-j 3] [-d dir] [-W [-C]] [-R] [-t giây]   nhiều task song song (<=4)
+#   agy-hd fan -i tasks_dir -o results_dir [-j 3] [-d dir] [-u profile] [-W [-C]] [-R] [-t giây]   nhiều task song song (<=4)
 #
 # Chọn session herdr bằng HERDR_SESSION (mặc định: session "default" đang chạy). Phiên Claude Code
 # KHÔNG cần chạy trong herdr. Registry: $AGY_HD_JOBS (mặc định ~/.cache/agy-hd). <job> = id hoặc tiền tố.
@@ -117,7 +120,7 @@ hcli() { if [[ -n ${HERDR_SESSION:-} && $HERDR_SESSION != default ]]; then echo 
 # server sống suốt phiên agy, không phải việc đang làm).
 agy_pids() { local d p; d=$(meta "$1" WORKTREE); [[ -n $d ]] || d=$(meta "$1" WORKDIR); d=${d%/}; [[ -n $d ]] || return 0
   for p in $(pgrep -x agy); do [[ $(readlink "/proc/$p/cwd" 2>/dev/null) == "$d" ]] && echo "$p"; done; }
-busy() { local p c; for p in $(agy_pids "$1"); do for c in $(pgrep -P "$p"); do
+busy() { local p c; subagent_busy "$(basename "$1")" && return 0; for p in $(agy_pids "$1"); do for c in $(pgrep -P "$p"); do
   tr '\0' ' ' <"/proc/$c/cmdline" 2>/dev/null | grep -qi mcp || return 0; done; done; return 1; }
 ensure_session() {  # tạo (nếu chưa có) session herdr riêng, headless, sống sau khi lệnh kết thúc
   local n=$1 i; [[ -z $n || $n == default ]] && return 0
@@ -133,6 +136,24 @@ ensure_session() {  # tạo (nếu chưa có) session herdr riêng, headless, s�
 use_session() { local s; s=$(meta "$1" SESSION); if [[ -z $s || $s == default ]]; then unset HERDR_SESSION; else export HERDR_SESSION=$s; fi; }
 astate()  { herdr agent get "$1" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone; }
 ago() { local s=$(( $(date +%s) - $1 )); printf '%dm%02ds' $((s/60)) $((s%60)); }
+
+# ── nhiều account (agy-p, skill agy-accounts): mỗi job chạy bằng một profile (PROFILE trong meta.env).
+# Pane được nạp môi trường của profile (eval "$(agy-p env <p>)": token riêng + shim để agy lồng bên trong cùng account)
+# trước khi `herdr agent start` gõ `agy ...` vào shell của pane. Không có agy-p thì chạy như cũ (~/.gemini).
+AGYP=$(command -v agy-p 2>/dev/null || echo "$HOME/.local/bin/agy-p")
+have_profiles() { [[ -x $AGYP ]]; }
+job_loads() {  # in các cặp "--load <profile>=<số job đang mở>" cho agy-p pick
+  local jd p; declare -A c=()
+  for jd in "$JOBS"/a-*/; do jd=${jd%/}; [[ -f $jd/meta.env ]] || continue
+    [[ $(meta "$jd" CLOSED) == 1 ]] && continue
+    case $(meta "$jd" TICK_STATE) in DONE|STOPPED) continue;; esac
+    p=$(meta "$jd" PROFILE); [[ -n $p ]] && c[$p]=$(( ${c[$p]:-0} + 1 ))
+  done
+  for p in "${!c[@]}"; do printf -- '--load\n%s=%s\n' "$p" "${c[$p]}"; done
+}
+pick_profile() { local a; mapfile -t a < <(job_loads); "$AGYP" pick "${a[@]}" "$@"; }   # $@: thêm --exclude-email ...
+profile_env_in_pane() { herdr pane run "$1" "eval \"\$($AGYP env $2)\" && clear" >/dev/null; sleep 1; }   # $1=pane $2=profile
+acct_of() { local p; p=$(meta "$1" PROFILE); [[ -n $p ]] && echo "$p ($(meta "$1" PROFILE_EMAIL))" || echo "~/.gemini (không qua agy-p)"; }
 
 tpath() {  # transcript của agy cho job: tìm bằng marker duy nhất trong prompt
   local jd=$1 id t; id=$(basename "$jd"); t=$(meta "$jd" TRANSCRIPT)
@@ -153,6 +174,7 @@ access() {
   local wl; wl=$(herdr workspace get "$ws" 2>/dev/null | jq -r '.result.workspace.label // empty')
   echo "ACCESS:"
   echo "  session    : ${HERDR_SESSION:-default}"
+  echo "  account    : $(acct_of "$jd")"
   if [[ -n ${HERDR_SESSION:-} && $HERDR_SESSION != default ]]; then
     echo "  VÀO XEM    : herdr --session $HERDR_SESSION   → workspace '${wl:-$ws}' → tab '$id'   (hoặc: herdr session attach $HERDR_SESSION)"
   else echo "  VÀO        : herdr   (session default) → workspace '${wl:-$ws}' → tab '$id'"; fi
@@ -170,6 +192,10 @@ finalize() {  # worktree: wrapper (không phải agy) commit những gì agy đ�
   fi
 }
 screen() { herdr agent read "$1" --source "${2:-recent-unwrapped}" --lines "${3:-40}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; }
+# agy đang chờ subagent (tool invoke_subagent): agent chính kết thúc lượt bằng "đang chờ subagent", herdr báo idle/done
+# và transcript đã có câu trả lời, nhưng việc chưa xong. Thanh trạng thái hiện "· N subagent(s)" tới khi subagent trả về
+# (gặp 2026-10-08 khi e2e nhiều account: wait báo DONE trong lúc subagent còn chạy).
+subagent_busy() { screen "$1" visible 6 | grep -qE '[0-9]+ subagent\(s\)'; }
 
 await_done() {  # $1=jd $2=timeout_s $3=số dòng transcript trước khi gửi prompt -> in: done|blocked|gone|timeout
   # herdr `agent prompt --wait` trả về ở lần idle đầu tiên, có thể nằm GIỮA các bước của agy (đã đo: báo DONE
@@ -217,9 +243,9 @@ send_prompt() {  # $1=jd  $2=text  $3=wait(1/0)  $4=timeout_s ; in STATUS
 
 # ───────────────────────────────────── start
 cmd_start() {
-  local name=job dir=$PWD pfile="" prompt="" tmo=900 wt=0 carry=0 ro=0 async=0 park=0 o sess=${AGY_HD_SESSION:-}
-  OPTIND=1; while getopts "n:d:f:p:t:S:WCRAP" o; do case $o in
-    n) name=$OPTARG;; d) dir=$OPTARG;; f) pfile=$OPTARG;; p) prompt=$OPTARG;; t) tmo=$OPTARG;; S) sess=$OPTARG;;
+  local name=job dir=$PWD pfile="" prompt="" tmo=900 wt=0 carry=0 ro=0 async=0 park=0 o sess=${AGY_HD_SESSION:-} acct=""
+  OPTIND=1; while getopts "n:d:f:p:t:S:u:WCRAP" o; do case $o in
+    n) name=$OPTARG;; d) dir=$OPTARG;; f) pfile=$OPTARG;; p) prompt=$OPTARG;; t) tmo=$OPTARG;; S) sess=$OPTARG;; u) acct=$OPTARG;;
     P) park=1;;
     W) wt=1;; C) carry=1;; R) ro=1;; A) async=1;; *) sed -n '2,12p' "$SELF"; exit 2;; esac; done
   [[ -n $pfile ]] && prompt=$(<"$pfile")
@@ -234,6 +260,13 @@ cmd_start() {
   local avail swp; avail=$(awk '/MemAvailable/{printf "%d",$2/1024}' /proc/meminfo); swp=$(free -m | awk '/Swap/{ if ($2>0) printf "%d",$3*100/$2; else print 0}')
   if (( avail < 1500 )) && [[ -z ${AGY_HD_FORCE:-} ]]; then die "RAM trống chỉ ${avail} MB (mỗi agy ~300 MB): đóng bớt agent/job rồi chạy lại, hoặc AGY_HD_FORCE=1"; fi
   (( swp > 85 )) && echo "WARN: swap đang ${swp}% đầy, RAM trống ${avail} MB; mỗi agy thêm ~300 MB. Cân nhắc -P (tự nhả RAM sau khi xong) và giảm -j." >&2
+  local prof="" pemail=""
+  if have_profiles; then   # chọn account trong khoá: các start song song (fan) thấy job của nhau khi chia tải
+    exec 8>"$JOBS/.pick.lock"; flock 8
+    if [[ -n $acct ]]; then "$AGYP" env "$acct" >/dev/null || die "profile '$acct' không dùng được (agy-p ls)"; prof=$acct
+    else prof=$(pick_profile) || { prof=$("$AGYP" default | awk '{print $1}'); echo "WARN: không account nào còn quota Gemini (agy-p usage); chạy bằng profile mặc định $prof" >&2; }; fi
+    pemail=$("$AGYP" email "$prof")
+  fi
   local n id jd; n=$(printf '%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-\n' '-' | cut -c1-20)
   id="a-$n-$(printf '%04x' $((RANDOM % 65536)))"; jd="$JOBS/$id"; mkdir -p "$jd"
   local repo="" wtdir="" branch="" base="" workdir=$dir
@@ -270,12 +303,17 @@ BASE=$base
 CARRY=$carry
 RO=$ro
 STARTED=$(date +%s)
+PROFILE=$prof
+PROFILE_EMAIL=$pemail
 PROMPT_HEAD=$(printf '%s' "$prompt" | head -c 100 | tr '\n' ' ')
 EOF
+  have_profiles && flock -u 8
   echo "JOB=$id"
+  [[ -n $prof ]] && echo "ACCOUNT=$prof ($pemail)"
   local out sbx=() sig_before=""
   tree_sig() { { git -C "$workdir" status --porcelain; git -C "$workdir" diff HEAD; } 2>/dev/null | md5sum; }
   [[ $ro -eq 1 ]] && { sbx=(--sandbox); sig_before=$(tree_sig); }   # -R: guard trong prompt không chặn gì → thêm --sandbox + kiểm tra cây git sau khi chạy
+  [[ -n $prof ]] && profile_env_in_pane "$pane" "$prof"
   out=$(herdr agent start "$id" --kind agy --pane "$pane" --timeout 60000 -- \
         --model "$MODEL" --effort high --dangerously-skip-permissions "${sbx[@]}" 2>&1) || {
     echo "STATUS=ERROR (agent start): $(jq -r '.error.message // .' <<<"$out" 2>/dev/null | head -2)"; access "$jd"; exit 1; }
@@ -376,10 +414,11 @@ cmd_resume() {
   local jd id cid; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need
   [[ $(astate "$id") == gone ]] || die "agent vẫn đang chạy; dùng agy-hd prompt"
   cid=$(cid_of "$jd"); [[ -n $cid ]] || die "không biết conversation id"
+  local prof; prof=$(meta "$jd" PROFILE); [[ -n $prof ]] && profile_env_in_pane "$(meta "$jd" PANE)" "$prof"
   herdr agent start "$id" --kind agy --pane "$(meta "$jd" PANE)" --timeout 60000 -- \
     --model "$MODEL" --effort high --dangerously-skip-permissions --conversation "$cid" >/dev/null 2>&1 || die "agent start thất bại"
   sleep 3; screen "$id" visible 30 | grep -q 'Do you trust' && herdr agent send-keys "$id" enter >/dev/null
-  echo "đã mở lại $id với conversation $cid"
+  echo "đã mở lại $id với conversation $cid, account $(acct_of "$jd")"
 }
 # Hết hạn mức Antigravity giữa chừng: màn hình agent hiện "Individual quota reached ... Resets in 3h16m" (log
 # ~/.gemini/antigravity-cli/log/cli-*.log ghi RESOURCE_EXHAUSTED (code 429)); agy đứng im ở idle/done mà việc chưa xong
@@ -393,6 +432,18 @@ cmd_restart() {
     for i in 1 2 3 4; do herdr agent send-keys "$id" ctrl+c >/dev/null; sleep 1; [[ $(astate "$id") == gone ]] && break; done
     for i in $(seq 15); do [[ $(astate "$id") == gone ]] && break; sleep 1; done
     [[ $(astate "$id") == gone ]] || die "$id không thoát được: agy-hd close $id rồi start lại job"
+  fi
+  if have_profiles && [[ -n $(meta "$jd" PROFILE) ]]; then   # hết quota: chuyển sang account khác còn quota
+    local qe e ex=() np; qe="$(meta "$jd" QUOTA_EMAILS) $(meta "$jd" PROFILE_EMAIL)"
+    qe=$(tr ' ' '\n' <<<"$qe" | grep -v '^$' | sort -u | tr '\n' ' '); setmeta "$jd" QUOTA_EMAILS "$qe"
+    "$AGYP" usage --tsv --max-age 0 >/dev/null 2>&1   # làm mới quota: account vừa hết sẽ hiện 0%
+    for e in $qe; do ex+=(--exclude-email "$e"); done
+    exec 8>"$JOBS/.pick.lock"; flock 8
+    if np=$(pick_profile "${ex[@]}" 2>/dev/null); then
+      echo "đổi account: $(acct_of "$jd") → $np ($("$AGYP" email "$np"))"
+      setmeta "$jd" PROFILE "$np"; setmeta "$jd" PROFILE_EMAIL "$("$AGYP" email "$np")"
+    else echo "không còn account nào khác có quota: mở lại trên $(acct_of "$jd")"; fi
+    flock -u 8
   fi
   cmd_resume "$id" || return 1
   for i in $(seq 30); do screen "$id" visible 30 | grep -q 'for shortcuts' && break; sleep 1; done
@@ -420,7 +471,7 @@ cmd_tick() {
   exec 9>"$JOBS/.tick.lock"; flock -w 50 9 || die "tick khác đang chạy"
   local now jd id st t age steps bc cage cmd v prev started tmp rs lr
   now=$(date +%s); tmp="$JOBS/.status.$$"
-  printf 'job\tstate\tsince\tsteps\ttx_age_s\trestarts\tworkspace\tcmd\n' >"$tmp"
+  printf 'job\tstate\tsince\tsteps\ttx_age_s\trestarts\tworkspace\tcmd\taccount\n' >"$tmp"
   for jd in "$JOBS"/a-*/; do
     jd=${jd%/}; [[ -f $jd/meta.env ]] || continue
     [[ $(meta "$jd" CLOSED) == 1 ]] && continue
@@ -435,6 +486,7 @@ cmd_tick() {
     if [[ $st != gone ]] && quota_hit "$id"; then v=QUOTA
     elif [[ $st == blocked ]]; then v=BLOCKED
     elif [[ -n $cmd ]]; then v=RUNNING; (( cage > CMD_STALL )) && v=STALL
+    elif [[ $st != gone ]] && subagent_busy "$id"; then v=RUNNING
     elif watch_fin "$jd" && [[ $st == idle || $st == done || $st == gone ]]; then v=DONE
     elif [[ $st == gone ]]; then v=STOPPED
     elif [[ $st == working ]]; then v=RUNNING; [[ $age != - ]] && (( age > STALL )) && v=STALL
@@ -451,15 +503,16 @@ cmd_tick() {
     fi
     if [[ $v == QUOTA ]]; then
       rs=$(meta "$jd" RESTARTS); rs=${rs:-0}; lr=$(meta "$jd" LAST_RESTART); lr=${lr:-0}
-      if (( rs < 5 && now - lr >= 180 )); then
+      local gap=180; have_profiles && [[ -n $(meta "$jd" PROFILE) ]] && gap=60   # có account khác để chuyển: restart sớm
+      if (( rs < 5 && now - lr >= gap )); then
         echo "$(date '+%F %T') $id auto-restart #$((rs+1)) (quota)" >>"$JOBS/events.log"
         ( cmd_restart "$id" ) >>"$JOBS/events.log" 2>&1
       elif (( rs >= 5 )); then
         [[ $(meta "$jd" QUOTA_GAVE_UP) == 1 ]] || { setmeta "$jd" QUOTA_GAVE_UP 1; echo "$(date '+%F %T') $id QUOTA: đã restart 5 lần, dừng tự restart (báo người dùng)" >>"$JOBS/events.log"; }
       fi
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$v" "$(date -d "@$(meta "$jd" TICK_SINCE)" +%H:%M:%S)" "$steps" "$age" \
-      "$(rs=$(meta "$jd" RESTARTS); echo "${rs:-0}")" "$(meta "$jd" WORKSPACE)" "${cmd:0:50}" >>"$tmp"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$v" "$(date -d "@$(meta "$jd" TICK_SINCE)" +%H:%M:%S)" "$steps" "$age" \
+      "$(rs=$(meta "$jd" RESTARTS); echo "${rs:-0}")" "$(meta "$jd" WORKSPACE)" "${cmd:0:50}" "$(meta "$jd" PROFILE)" >>"$tmp"
   done
   mv "$tmp" "$JOBS/STATUS.tsv"; printf '%s\n' "$(date '+%F %T')" >"$JOBS/STATUS.updated"
   (( show )) && { column -t -s$'\t' "$JOBS/STATUS.tsv"; echo "--- 8 sự kiện cuối ($JOBS/events.log):"; tail -8 "$JOBS/events.log" 2>/dev/null; }
@@ -537,7 +590,7 @@ cmd_list() {
   local d
   for d in $(ls -1dt "$JOBS"/*/ 2>/dev/null | tac); do d=${d%/}
     local st; st=$( ( use_session "$d"; herdr status server 2>/dev/null | grep -q running && astate "$(basename "$d")" || echo no-server ) )
-    printf '%-8s %-7s %-14s %-6s %-22s %s  %s\n' "$st" "$(ago "$(meta "$d" STARTED)")" "$(meta "$d" SESSION)" "$(meta "$d" WORKSPACE)" "$(basename "$d")" "$(meta "$d" BRANCH)" "$(p=$(meta "$d" PROMPT_HEAD); echo "${p:0:40}")"
+    printf '%-8s %-7s %-14s %-6s %-22s %-14s %s  %s\n' "$st" "$(ago "$(meta "$d" STARTED)")" "$(meta "$d" SESSION)" "$(meta "$d" WORKSPACE)" "$(basename "$d")" "$(p=$(meta "$d" PROFILE); echo "${p:--}")" "$(meta "$d" BRANCH)" "$(p=$(meta "$d" PROMPT_HEAD); echo "${p:0:40}")"
   done
 }
 cmd_wt() {
@@ -581,7 +634,7 @@ cmd_gc() {
 }
 cmd_fan() {
   local tasks="" res="" j=3 dir=$PWD fl=() tmo=900 o; OPTIND=1
-  local keep=0 fsess=""; while getopts "i:o:j:d:WCRt:S:K" o; do case $o in K) keep=1;; S) fsess=$OPTARG;; i) tasks=$OPTARG;; o) res=$OPTARG;; j) j=$OPTARG;; d) dir=$OPTARG;;
+  local keep=0 fsess=""; while getopts "i:o:j:d:WCRt:S:Ku:" o; do case $o in K) keep=1;; S) fsess=$OPTARG;; u) fl+=(-u "$OPTARG");; i) tasks=$OPTARG;; o) res=$OPTARG;; j) j=$OPTARG;; d) dir=$OPTARG;;
     W) fl+=(-W);; C) fl+=(-C);; R) fl+=(-R);; t) tmo=$OPTARG;; *) exit 2;; esac; done
   [[ -z $fsess ]] && fsess=$(shared_session); fl+=(-S "$fsess")
   [[ $keep -eq 0 ]] && fl+=(-P)   # mặc định nhả RAM từng agent ngay khi task xong (-K để giữ sống)
@@ -637,6 +690,7 @@ cmd_watch() {
         blocked) v=BLOCKED;;
         gone) if watch_fin "$jd"; then v=DONE; else v=GONE; fi;;
         *) if [[ -n $cmd ]]; then (( cage > CMD_STALL )) && v=STALL
+           elif subagent_busy "$id"; then v=ok
            elif [[ $st == idle || $st == done ]] && watch_fin "$jd"; then
              sleep 5; [[ $(astate "$id") == "$st" && -z $(watch_cmd "$jd") && $(wc -l <"$t") -eq $steps ]] && v=DONE
            elif [[ $age != - ]] && (( age > STALL )); then v=STALL; fi;;
