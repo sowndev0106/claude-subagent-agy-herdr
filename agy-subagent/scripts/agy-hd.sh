@@ -156,6 +156,36 @@ job_loads() {  # in các cặp "--load <profile>=<số job đang mở>" cho agy-
 }
 pick_profile() { local a; mapfile -t a < <(job_loads); "$AGYP" pick "${a[@]}" "$@"; }   # $@: thêm --exclude-email ...
 profile_env_in_pane() { herdr pane run "$1" "eval \"\$($AGYP env $2)\" && clear" >/dev/null; sleep 1; }   # $1=pane $2=profile
+# Khoá theo job: tick (timer mỗi phút) và lệnh tay (park/resume/restart/switch/interrupt/close) không được đổi
+# trạng thái cùng một job một lúc. Gặp 2026-10-08: tick tự restart job (thấy dòng quota trên màn hình) đúng lúc
+# đang park/resume tay → resume ra account khác, park không thoát được agy. Khoá vào lại được trong cùng tiến trình
+# (restart → resume). Tick dùng job_trylock: job đang bận thì để vòng sau.
+JOB_LOCKED=""
+job_lock() {   # $1=jd; chờ tối đa 120 s
+  [[ $JOB_LOCKED == "$1" ]] && return 0
+  exec 7>"$1/.lock"; flock -w 120 7 || die "$(basename "$1") đang bận (một lệnh khác hoặc tick đang xử lý nó); thử lại sau"
+  JOB_LOCKED=$1
+}
+job_trylock() { [[ $JOB_LOCKED == "$1" ]] && return 0; exec 7>"$1/.lock"; flock -n 7 && JOB_LOCKED=$1; }
+# Shell của pane đã lấy lại terminal chưa (agy và MCP server con của nó đã ra khỏi foreground)
+wait_shell() {  # $1=pane; tối đa ~10 s
+  local i fgp
+  for i in $(seq 50); do
+    fgp=$(herdr pane process-info --pane "$1" 2>/dev/null | jq -r '[.result.process_info.foreground_processes[].name] | join(",")' 2>/dev/null)
+    [[ -n $fgp && $fgp != *agy* && $fgp != *npm* && $fgp != *mcp* ]] && return 0; sleep 0.2
+  done; return 1
+}
+# herdr agent start gõ `agy ...` vào shell của pane. Lỗi thì in đúng lời herdr và thử lại một lần sau 3 s
+# (D6 e2e 2026-10-08 thất bại một lần mà chưa tái hiện được; giữ lời lỗi để lần sau biết nguyên nhân).
+agent_start() {  # $1=id $2=pane, còn lại: tham số cho agy
+  local id=$1 pane=$2 out try; shift 2
+  for try in 1 2; do
+    wait_shell "$pane" || echo "WARN: pane $pane vẫn chưa về shell sau 10 s" >&2
+    out=$(herdr agent start "$id" --kind agy --pane "$pane" --timeout 60000 -- "$@" 2>&1) && { echo "$out"; return 0; }
+    echo "agent start lần $try lỗi: $(jq -r '.error.message // .' <<<"$out" 2>/dev/null | head -2)" >&2
+    (( try == 1 )) && sleep 3
+  done; echo "$out"; return 1
+}
 acct_of() { local p; p=$(meta "$1" PROFILE); [[ -n $p ]] && echo "$p ($(meta "$1" PROFILE_EMAIL))" || echo "~/.gemini (không qua agy-p)"; }
 
 tpath() {  # transcript của agy cho job: tìm bằng marker duy nhất trong prompt
@@ -317,8 +347,7 @@ EOF
   tree_sig() { { git -C "$workdir" status --porcelain; git -C "$workdir" diff HEAD; } 2>/dev/null | md5sum; }
   [[ $ro -eq 1 ]] && { sbx=(--sandbox); sig_before=$(tree_sig); }   # -R: guard trong prompt không chặn gì → thêm --sandbox + kiểm tra cây git sau khi chạy
   [[ -n $prof ]] && profile_env_in_pane "$pane" "$prof"
-  out=$(herdr agent start "$id" --kind agy --pane "$pane" --timeout 60000 -- \
-        --model "$MODEL" --effort high --dangerously-skip-permissions "${sbx[@]}" 2>&1) || {
+  out=$(agent_start "$id" "$pane" --model "$MODEL" --effort high --dangerously-skip-permissions "${sbx[@]}") || {
     echo "STATUS=ERROR (agent start): $(jq -r '.error.message // .' <<<"$out" 2>/dev/null | head -2)"; access "$jd"; exit 1; }
 
   # agy hỏi "Do you trust this folder?" ở thư mục mới (bypass KHÔNG bỏ qua, herdr còn báo idle sai).
@@ -356,7 +385,9 @@ cmd_prompt() {
   if [[ ${1:-} != -* && -n ${1:-} ]]; then text=$1; shift; fi
   OPTIND=1; while getopts "f:At:" o; do case $o in f) pfile=$OPTARG;; A) wait=0;; t) tmo=$OPTARG;; *) exit 2;; esac; done
   [[ -n $pfile ]] && text=$(<"$pfile"); [[ -n $text ]] || die "thiếu prompt"
+  job_lock "$jd"   # đợi restart/switch đang chạy (nếu có) xong rồi mới gửi; nhả khoá trước khi chờ để tick vẫn xử lý được quota
   [[ $(astate "$(basename "$jd")") == gone ]] && die "agent đã thoát; chạy: agy-hd resume $k"
+  flock -u 7; JOB_LOCKED=""
   send_prompt "$jd" "$text" $wait "$tmo"; local rc=$?; finalize "$jd"
   [[ $wait -eq 1 ]] && { echo "---"; result_of "$jd"; }; return $rc
 }
@@ -388,7 +419,7 @@ cmd_summary() {
   [[ -n $b ]] && { echo "--- DIFFSTAT $b"; git -C "$r" diff --stat "$(meta "$jd" BASE)" "$b"; }
 }
 cmd_interrupt() {
-  local jd id st i; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need
+  local jd id st i; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need; job_lock "$jd"
   [[ $(astate "$id") == gone ]] && { echo "agent đã thoát sẵn"; return 0; }
   # Đã đo: lệnh chạy foreground -> 1 Ctrl+C huỷ lượt, agy về idle (còn sống, giữ ngữ cảnh).
   # Tác vụ nền của agy -> 1 Ctrl+C chỉ hiện "press ctrl+c again to exit"; Ctrl+C lần 2 mới thoát agy và dọn lệnh con.
@@ -405,7 +436,7 @@ cmd_interrupt() {
   esac
 }
 cmd_park() {  # thoát agy (đang idle) để nhả ~280 MB RAM; workspace + transcript giữ nguyên; agy-hd resume để mở lại
-  local jd id st i; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need; finalize "$jd"
+  local jd id st i; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need; job_lock "$jd"; finalize "$jd"
   st=$(astate "$id"); [[ $st == gone ]] && { echo "$id: agy đã thoát sẵn"; return 0; }
   [[ $st == working || $st == blocked ]] && die "$id đang $st: chờ xong hoặc dùng interrupt trước"
   busy "$jd" && die "$id còn lệnh đang chạy (agy chạy nền): chờ xong rồi park"
@@ -414,12 +445,12 @@ cmd_park() {  # thoát agy (đang idle) để nhả ~280 MB RAM; workspace + tra
   echo "agy chưa thoát: dùng agy-hd close $id"; return 1
 }
 cmd_resume() {
-  local jd id cid; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need
+  local jd id cid; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need; job_lock "$jd"
   [[ $(astate "$id") == gone ]] || die "agent vẫn đang chạy; dùng agy-hd prompt"
   cid=$(cid_of "$jd"); [[ -n $cid ]] || die "không biết conversation id"
   local prof; prof=$(meta "$jd" PROFILE); [[ -n $prof ]] && profile_env_in_pane "$(meta "$jd" PANE)" "$prof"
-  herdr agent start "$id" --kind agy --pane "$(meta "$jd" PANE)" --timeout 60000 -- \
-    --model "$MODEL" --effort high --dangerously-skip-permissions --conversation "$cid" >/dev/null 2>&1 || die "agent start thất bại"
+  local out; out=$(agent_start "$id" "$(meta "$jd" PANE)" --model "$MODEL" --effort high --dangerously-skip-permissions --conversation "$cid") \
+    || die "agent start thất bại: $(jq -r '.error.message // .' <<<"$out" 2>/dev/null | head -2)"
   sleep 3; screen "$id" visible 30 | grep -q 'Do you trust' && herdr agent send-keys "$id" enter >/dev/null
   echo "đã mở lại $id với conversation $cid, account $(acct_of "$jd")"
 }
@@ -429,7 +460,7 @@ cmd_resume() {
 # Chỉ xét ~12 dòng cuối đang hiện: thông báo cũ trôi lên khi agy chạy tiếp sau restart.
 quota_hit() { screen "$1" visible 40 | grep -v '^[[:space:]]*$' | tail -12 | grep -q -E 'Individual quota reached|RESOURCE_EXHAUSTED|[Qq]uota (reached|exceeded)'; }
 cmd_restart() {
-  local jd id i msg; jd=$(resolve "${1:?job}"); shift; id=$(basename "$jd"); use_session "$jd"; need
+  local jd id i msg; jd=$(resolve "${1:?job}"); shift; id=$(basename "$jd"); use_session "$jd"; need; job_lock "$jd"
   msg=${1:-"Phiên agy trước của bạn bị dừng giữa chừng (hết hạn mức Antigravity) và vừa được mở lại. Tiếp tục ĐÚNG việc đang làm dở: xem lại các file bạn đã ghi để biết đã xong tới đâu, làm tiếp phần còn thiếu, không làm lại từ đầu, rồi báo cáo đúng format đã yêu cầu. Chạy mọi lệnh ở chế độ chờ cho tới khi xong."}
   if [[ $(astate "$id") != gone ]]; then   # idle: ctrl+c lần 1 hiện banner, lần 2 thoát; working: lần 1 huỷ lượt
     for i in 1 2 3 4; do herdr agent send-keys "$id" ctrl+c >/dev/null; sleep 1; [[ $(astate "$id") == gone ]] && break; done
@@ -459,7 +490,7 @@ cmd_restart() {
 cmd_switch() {  # agy-hd switch <job> [profile] [-f]
   local k=${1:?job}; shift; local np="" force=0 a
   for a in "$@"; do [[ $a == -f ]] && force=1 || np=$a; done
-  local jd id st i; jd=$(resolve "$k"); id=$(basename "$jd"); use_session "$jd"; need
+  local jd id st i; jd=$(resolve "$k"); id=$(basename "$jd"); use_session "$jd"; need; job_lock "$jd"
   have_profiles || die "chưa có agy-p (skill agy-accounts)"
   exec 8>"$JOBS/.pick.lock"; flock 8
   if [[ -n $np ]]; then "$AGYP" env "$np" >/dev/null || die "profile '$np' không dùng được (agy-p ls)"
@@ -487,10 +518,10 @@ cmd_accounts() {  # bảng account + quota + job đang mở
   local -A jobs=(); local jd p
   for jd in "$JOBS"/a-*/; do jd=${jd%/}; [[ -f $jd/meta.env ]] || continue
     [[ $(meta "$jd" CLOSED) == 1 ]] && continue
-    case $(meta "$jd" TICK_STATE) in DONE|STOPPED) continue;; esac
-    p=$(meta "$jd" PROFILE); [[ -n $p ]] && jobs[$p]="${jobs[$p]:+${jobs[$p]} }$(basename "$jd")"
+    local tag=""; case $(meta "$jd" TICK_STATE) in DONE) tag="(xong)";; STOPPED) tag="(dừng)";; esac
+    p=$(meta "$jd" PROFILE); [[ -n $p ]] && jobs[$p]="${jobs[$p]:+${jobs[$p]} }$(basename "$jd")$tag"
   done
-  { printf 'PROFILE\tEMAIL\tGEMINI TUẦN\tGEMINI 5H\tJOB ĐANG MỞ\n'
+  { printf 'PROFILE\tEMAIL\tGEMINI TUẦN\tGEMINI 5H\tJOB CÒN TAB (xong/dừng ghi kèm)\n'
     "$AGYP" usage --tsv --max-age 300 | while IFS=$'\t' read -r p e gw g5 _; do
       [[ $e == - ]] && continue
       printf '%s\t%s\t%s%%\t%s%%\t%s\n' "$p" "$e" "$gw" "$g5" "${jobs[$p]:--}"
@@ -550,8 +581,10 @@ cmd_tick() {
       rs=$(meta "$jd" RESTARTS); rs=${rs:-0}; lr=$(meta "$jd" LAST_RESTART); lr=${lr:-0}
       local gap=180; have_profiles && [[ -n $(meta "$jd" PROFILE) ]] && gap=60   # có account khác để chuyển: restart sớm
       if (( rs < 5 && now - lr >= gap )); then
-        echo "$(date '+%F %T') $id auto-restart #$((rs+1)) (quota)" >>"$JOBS/events.log"
-        ( cmd_restart "$id" ) >>"$JOBS/events.log" 2>&1
+        if ( job_trylock "$jd" ); then
+          echo "$(date '+%F %T') $id auto-restart #$((rs+1)) (quota)" >>"$JOBS/events.log"
+          ( job_trylock "$jd" || exit 0; cmd_restart "$id" ) >>"$JOBS/events.log" 2>&1
+        else echo "$(date '+%F %T') $id QUOTA nhưng đang có lệnh khác xử lý job: để vòng sau" >>"$JOBS/events.log"; fi
       elif (( rs >= 5 )); then
         [[ $(meta "$jd" QUOTA_GAVE_UP) == 1 ]] || { setmeta "$jd" QUOTA_GAVE_UP 1; echo "$(date '+%F %T') $id QUOTA: đã restart 5 lần, dừng tự restart (báo người dùng)" >>"$JOBS/events.log"; }
       fi
@@ -564,7 +597,7 @@ cmd_tick() {
   return 0
 }
 cmd_close() {
-  local jd; jd=$(resolve "${1:?job}"); use_session "$jd"; need; finalize "$jd"
+  local jd; jd=$(resolve "${1:?job}"); use_session "$jd"; need; job_lock "$jd"; finalize "$jd"
   close_ui "$jd"; echo "đã đóng tab $(meta "$jd" TAB) của $(basename "$jd") (workspace của phiên giữ nguyên nếu còn tab khác)"
 }
 ps_one() {  # bảng theo workspace (= 1 phiên Claude Code) -> pane (= 1 subagent); ★ = job do agy-hd tạo; $1=1 thì tự làm mới

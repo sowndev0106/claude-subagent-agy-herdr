@@ -128,7 +128,10 @@ Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab l
 - Dòng `ACCOUNT=<profile> (<email>)` khi start, dòng `account :` trong ACCESS, cột `account` trong `STATUS.tsv` / `agy-hd list`.
 - Hội thoại dùng chung mọi profile, nên **resume / restart sang account khác giữ nguyên conversation**.
   Subagent dùng sẵn của agy (`invoke_subagent`) và lệnh `agy` lồng trong job đều chạy cùng account đó.
-- Xem quota: `agy-p usage`. Thêm account: `agy-p add` (xem skill agy-accounts).
+- Xem quota: `agy-p usage`. Thêm account: `agy-p add` (xem skill agy-accounts). Chuyển một job: `agy-hd switch <job> [profile]`;
+  bảng account + job: `agy-hd accounts`.
+- **Khoá theo job**: `park`/`resume`/`restart`/`switch`/`interrupt`/`close` và tick không đổi trạng thái cùng một job một lúc
+  (lệnh tay chờ tối đa 120 s; tick thấy job bận thì để vòng sau). `prompt` chỉ giữ khoá lúc gửi.
 
 ## Hết hạn mức Antigravity (quota)
 

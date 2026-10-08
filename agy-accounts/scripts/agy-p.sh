@@ -129,9 +129,18 @@ if os.path.exists(s):
 EOF
 }
 
+purge_logins() {  # dọn kết quả/phiên đăng nhập bỏ dở: .result-* (không ai gọi agy-p code) và .login-* không còn login.py chạy
+  [[ -d $ROOT ]] || return 0
+  find "$ROOT" -maxdepth 1 -name '.result-*' -mmin +20 -delete 2>/dev/null
+  local d; for d in "$ROOT"/.login-*; do [[ -d $d ]] || continue
+    pgrep -f -- "--gemini-dir $d" >/dev/null 2>&1 || [[ $(find "$d" -maxdepth 0 -mmin -20 2>/dev/null) ]] || rm -rf -- "$d"
+  done; return 0
+}
+
 cmd_add() {  # đăng nhập ẩn: in link, nhận mã (gõ vào, hoặc `agy-p code`), không mở giao diện agy
   local ui=0; [[ ${1:-} == -i ]] && { ui=1; shift; }
   local want=${1:-} p id e
+  purge_logins
   if [[ -n $want ]]; then  # đặt tên sẵn
     valid "$want"; [[ $want != main ]] || die "'main' là ~/.gemini, đăng nhập bằng agy thường"
     e=$(email "$want"); [[ -z $e ]] || die "profile '$want' đã đăng nhập ($e)"
@@ -467,6 +476,8 @@ cmd_doctor() {
     elif (( gw < MIN_QUOTA || g5 < MIN_QUOTA )); then hmm "$p: Gemini tuần $gw%, 5 giờ $g5% (dưới ${MIN_QUOTA}%, không được tự chọn)"
     else ok "$p: Gemini tuần $gw%, 5 giờ $g5%"; fi
   done < <(usage_tsv 0)
+  local stale; stale=$(find "$ROOT" -maxdepth 1 \( -name '.result-*' -o -name '.login-*' \) -mmin +20 2>/dev/null | wc -l)
+  (( stale )) && hmm "$stale file/thư mục đăng nhập bỏ dở trong $ROOT (lần agy-p add sau sẽ tự dọn)"
   echo "agy-hd"
   local hd; hd=$(command -v agy-hd 2>/dev/null)
   if [[ -z $hd ]]; then hmm "không có agy-hd trong PATH (skill agy-subagent)"
@@ -509,9 +520,9 @@ for line in tsv.splitlines():
     g = [int(x) if x.lstrip("-").isdigit() else -1 for x in f[2:6]]
     star = f" {C['b']}★ mặc định{C['0']}" if n == default else ""
     print(f"{C['b']}{e}{C['0']}  {C['d']}{n}{C['0']}{star}")
-    print(f"  Gemini tuần {bar(g[0])}  {C['d']}{left(f[6])}{C['0']}")
-    print(f"  Gemini 5 giờ {bar(g[1])}  {C['d']}{left(f[7])}{C['0']}")
-    print(f"  Claude tuần {bar(g[2])}  {C['d']}{left(f[8])}{C['0']}\n")
+    for i, lab in enumerate(["Gemini tuần", "Gemini 5 giờ", "Claude tuần"]):   # nhãn cùng độ rộng: thanh thẳng cột
+        print(f"  {lab:<13}{bar(g[i])}  {C['d']}{left(f[6 + i])}{C['0']}")
+    print()
 EOF
     sleep "$every"
   done
