@@ -26,6 +26,9 @@ A toolkit and agent skills suite enabling **Claude Code** to orchestrate **Antig
 | **`agy-review`** | Solicit an independent read-only second opinion on diffs/code, validated against a JSON schema (`schema.json`). | `agy-sub -R -s schema.json` |
 | **`claude-task-id`** | Allocate and maintain a 3-digit task identifier (`#132 ...`) shared across Claude Code and herdr workspaces. | `agy-id claim`, `agy-id show` |
 | **`agy-accounts`** | Run agy on several Google accounts (one profile each): hidden login, per-account quota, default account, auto-pick and quota failover for jobs. | `agy-p add`, `agy-p usage`, `agy-p default`, `agy-hd start -u` |
+| **`agy-login`** | Log an account in without the agy UI (this machine or a remote one over ssh), re-login, move accounts between machines. | `agy-p add`, `agy-p remote <host> add`, `agy-p relogin`, `agy-p export/import` |
+| **`agy-quota`** | Quota left per account (Gemini/Claude, weekly and 5-hour): HTML dashboard, live terminal view, table. | `agy-p dash`, `agy-p top`, `agy-p usage`, `agy-p whoami` |
+| **`agy-switch`** | Switch the account: default, current terminal, one running agy-hd job (same conversation), or auto by quota. | `agy-p switch [--auto]`, `agy-p use`, `agy-hd switch` |
 
 Windows: headless runners also ship as PowerShell + CMD wrappers (`agy-sub`, `agy-ctl`, `agy-fan`, `agy-id` `.ps1`/`.cmd`); add the `scripts/` folders to `PATH`.
 
@@ -61,6 +64,11 @@ agy-p usage                # weekly + 5-hour Gemini / Claude quota left per acco
 agy-p dash                 # visual HTML quota dashboard (opens in the browser)
 agy-p default work         # default account for new runs
 agy-hd start -u work ...   # pin a job to an account; omit -u to auto-pick
+agy-p whoami               # which account this terminal / plain agy uses
+agy-p switch --auto        # make the account with the most quota the default
+agy-hd switch <job> work   # move a job to another account, same conversation
+agy-p remote <host> add    # log in on another machine over ssh (link printed here)
+agy-p doctor               # health check
 ```
 
 * **Auto-pick** (`agy-p pick`, used by `agy-hd start/fan` and `agy-sub` without `-u`): the default profile while it has ≥ 20 % Gemini quota and < 2 open jobs, otherwise the account with the best `quota / (1 + open jobs)`; accounts under 5 % are skipped and profiles sharing an email count once.
@@ -177,7 +185,10 @@ claude-subagent-agy-herdr/
 │   ├── SKILL.md
 │   └── scripts/
 │       └── agy-id.sh          # Maps session IDs to #100..#999 task identifiers
-└── agy-accounts/              # Multiple Google accounts for agy
+├── agy-login/                 # Skill: log in (local / remote), re-login, move accounts
+├── agy-quota/                 # Skill: quota dashboard and views
+├── agy-switch/                # Skill: switch default / terminal / job account
+└── agy-accounts/              # Multiple Google accounts for agy (agy-p and its docs)
     ├── SKILL.md
     └── scripts/
         ├── agy-p.sh           # Profiles: add/ls/usage/default/pick/env/rm, run agy on a profile

@@ -23,6 +23,16 @@ agy-hd start -u work …        # job agy-hd trên account đó; bỏ -u = tự 
 Người dùng muốn "xem limit" / "dashboard": chạy `agy-p dash --no-open --fragment <scratchpad>/agy-quota-board.html`
 rồi đăng file fragment bằng Artifact (cùng đường dẫn để giữ URL); bản trên máy ở `~/.agy-profiles/dashboard.html`.
 
+## Skill theo việc
+
+- **agy-login**: đăng nhập (máy này, máy khác qua ssh), relogin, chuyển account giữa các máy.
+- **agy-quota**: xem limit (dashboard, `top`, `usage`, `whoami`).
+- **agy-switch**: đổi account (mặc định, terminal, một job agy-hd, tự động theo quota).
+
+Lệnh đủ bộ (`agy-p` không tham số để xem đầu file script): `add code ls usage dash default switch use whoami best
+pick env email rename relogin rm doctor top export import remote completion`. agy-hd thêm `-u`, `switch`, `accounts`.
+Có vấn đề thì chạy `agy-p doctor` trước.
+
 ## Đăng nhập account mới (workflow)
 
 Không có lệnh login của agy; `agy-p add` chạy agy trong pty ẩn, không mở UI ở đâu cả.

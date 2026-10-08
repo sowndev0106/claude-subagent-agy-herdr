@@ -85,6 +85,14 @@ def fail(msg):
     return 4
 
 
+def on_signal(signum, _frame):  # bị tắt giữa chừng (Ctrl+C, kill): tắt luôn agy con, không để mồ côi
+    stop()
+    raise SystemExit(128 + signum)
+
+
+for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(_sig, on_signal)
+
 wait_for(lambda: "Select login method" in text(), 60, "màn hình chọn cách đăng nhập")
 os.write(fd, b"\r")  # 1. Google OAuth
 

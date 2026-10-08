@@ -31,6 +31,9 @@
 #   agy-hd interrupt <job>   huỷ lượt đang chạy (Ctrl+C; lần 2 nếu còn working): lệnh con bị dọn, workspace giữ lại
 #   agy-hd park <job>        thoát agy đang idle để NHẢ RAM (~280 MB), giữ workspace + log; resume để mở lại
 #   agy-hd resume <job>      mở lại agy trong cùng pane, tiếp hội thoại cũ
+#   agy-hd switch <job> [profile] [-f]   chuyển job sang account khác (agy-p), resume đúng conversation; không ghi
+#                            profile = account khác còn nhiều quota nhất; -f: job đang chạy thì interrupt trước
+#   agy-hd accounts          các account agy-p: quota Gemini + job đang mở trên từng account
 #   agy-hd restart <job> ["prompt"]  HẾT HẠN MỨC (quota): tắt agy của job rồi mở lại cùng hội thoại + prompt "làm tiếp"
 #   agy-hd tick [--show]     SCHEDULER: một lượt kiểm MỌI job đang mở (RUNNING/DONE/QUOTA/STOPPED/STALL/BLOCKED), ghi
 #                            STATUS.tsv + events.log, tự restart job hết hạn mức. systemd timer agy-hd-tick chạy mỗi phút
@@ -453,6 +456,48 @@ cmd_restart() {
   if [[ $(astate "$id") == working ]]; then echo "đã khởi động lại $id, agy đang làm tiếp. Theo dõi: agy-hd watch $id"
   else echo "⚠ đã khởi động lại $id nhưng agy chưa chạy ($(astate "$id")); xem agy-hd status $id"; fi
 }
+cmd_switch() {  # agy-hd switch <job> [profile] [-f]
+  local k=${1:?job}; shift; local np="" force=0 a
+  for a in "$@"; do [[ $a == -f ]] && force=1 || np=$a; done
+  local jd id st i; jd=$(resolve "$k"); id=$(basename "$jd"); use_session "$jd"; need
+  have_profiles || die "chưa có agy-p (skill agy-accounts)"
+  exec 8>"$JOBS/.pick.lock"; flock 8
+  if [[ -n $np ]]; then "$AGYP" env "$np" >/dev/null || die "profile '$np' không dùng được (agy-p ls)"
+  else
+    local ex=(); [[ -n $(meta "$jd" PROFILE_EMAIL) ]] && ex=(--exclude-email "$(meta "$jd" PROFILE_EMAIL)")
+    np=$(pick_profile "${ex[@]}") || die "không còn account nào khác có quota (agy-p usage)"
+  fi
+  local old; old=$(acct_of "$jd")
+  setmeta "$jd" PROFILE "$np"; setmeta "$jd" PROFILE_EMAIL "$("$AGYP" email "$np")"; flock -u 8
+  st=$(astate "$id")
+  if [[ $st == working || $st == blocked ]]; then
+    (( force )) || die "$id đang $st: chờ xong, hoặc thêm -f để interrupt rồi chuyển"
+    cmd_interrupt "$id" >/dev/null || true; st=$(astate "$id")
+  fi
+  if [[ $st != gone ]]; then   # idle: ctrl+c lần 1 hiện banner, lần 2 thoát
+    for i in 1 2 3 4; do herdr agent send-keys "$id" ctrl+c >/dev/null; sleep 1; [[ $(astate "$id") == gone ]] && break; done
+    for i in $(seq 15); do [[ $(astate "$id") == gone ]] && break; sleep 1; done
+    [[ $(astate "$id") == gone ]] || die "$id không thoát được: agy-hd close $id"
+  fi
+  cmd_resume "$id" >/dev/null || return 1
+  echo "đã chuyển $id: $old → $(acct_of "$jd"). Conversation giữ nguyên; giao việc tiếp: agy-hd prompt $id \"...\""
+}
+cmd_accounts() {  # bảng account + quota + job đang mở
+  have_profiles || die "chưa có agy-p (skill agy-accounts)"
+  local -A jobs=(); local jd p
+  for jd in "$JOBS"/a-*/; do jd=${jd%/}; [[ -f $jd/meta.env ]] || continue
+    [[ $(meta "$jd" CLOSED) == 1 ]] && continue
+    case $(meta "$jd" TICK_STATE) in DONE|STOPPED) continue;; esac
+    p=$(meta "$jd" PROFILE); [[ -n $p ]] && jobs[$p]="${jobs[$p]:+${jobs[$p]} }$(basename "$jd")"
+  done
+  { printf 'PROFILE\tEMAIL\tGEMINI TUẦN\tGEMINI 5H\tJOB ĐANG MỞ\n'
+    "$AGYP" usage --tsv --max-age 300 | while IFS=$'\t' read -r p e gw g5 _; do
+      [[ $e == - ]] && continue
+      printf '%s\t%s\t%s%%\t%s%%\t%s\n' "$p" "$e" "$gw" "$g5" "${jobs[$p]:--}"
+    done; } | column -t -s $'\t'   # column đếm theo ký tự (chữ có dấu không làm lệch cột)
+  echo "mặc định: $("$AGYP" default)   · job mới sẽ chạy trên: $(pick_profile 2>/dev/null || echo 'không account nào đủ quota')"
+}
+
 # tick: một lượt kiểm mọi job đang mở. systemd user timer agy-hd-tick.timer chạy nó MỖI PHÚT, độc lập với phiên
 # Claude (một watch chạy nền trong phiên có thể bị Claude Code dừng khi máy thiếu RAM, như ngày 2026-10-05: 4 agent
 # hết hạn mức mà phiên không biết). Mỗi job được gán một trạng thái:
@@ -714,7 +759,7 @@ cmd_watch() {
 
 sub=${1:-}; shift || true
 case $sub in
-  start) cmd_start "$@";; prompt) cmd_prompt "$@";; status) cmd_status "$@";; wait) cmd_wait "$@";; watch) cmd_watch "$@";; restart) cmd_restart "$@";; tick) cmd_tick "$@";;
+  start) cmd_start "$@";; prompt) cmd_prompt "$@";; status) cmd_status "$@";; wait) cmd_wait "$@";; watch) cmd_watch "$@";; restart) cmd_restart "$@";; switch) cmd_switch "$@";; accounts) cmd_accounts "$@";; tick) cmd_tick "$@";;
   logs) cmd_logs "$@";; result) cmd_result "$@";; summary) cmd_summary "$@";; access) cmd_access "$@";;
   interrupt) cmd_interrupt "$@";; resume) cmd_resume "$@";; close) cmd_close "$@";; list) cmd_list "$@";;
   wt-diff|wt-merge|wt-drop) cmd_wt "$sub" "$@";; gc) cmd_gc "$@";; fan) cmd_fan "$@";;

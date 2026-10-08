@@ -18,7 +18,7 @@ mkdir -p "$CLAUDE_SKILLS_DIR" "$BIN_DIR" "$SYSTEMD_USER_DIR"
 
 # 1. Symlink skills
 echo "==> 1. Symlinking skills to $CLAUDE_SKILLS_DIR..."
-for skill in agy-subagent agy-parallel agy-review claude-task-id agy-accounts; do
+for skill in agy-subagent agy-parallel agy-review claude-task-id agy-accounts agy-login agy-quota agy-switch; do
   if [ -d "$REPO_DIR/$skill" ]; then
     ln -sfn "$REPO_DIR/$skill" "$CLAUDE_SKILLS_DIR/$skill"
     echo "    ✓ $CLAUDE_SKILLS_DIR/$skill -> $REPO_DIR/$skill"
