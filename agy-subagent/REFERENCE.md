@@ -44,12 +44,22 @@ Dùng tay (trong session đang chạy): `herdr agent read <id> --source recent-u
 - Test cô lập: `herdr --session <tên> server &` rồi `HERDR_SESSION=<tên> ...`; xong `herdr session stop|delete <tên>`.
   `selftest-hd.sh` làm đúng như vậy.
 
-## Bản headless (khi herdr không chạy, hoặc cần `-s` structured output)
+## Bản headless (khi herdr không chạy, hoặc cần `-s` structured output, hoặc chạy trên Windows)
 
 `agy-sub` (1 task, `-W -C -R -s -r -a -t -n`), `agy-fan` (nhiều task), `agy-ctl` (list/status/tail/history/summary/stop/wait/gc/wt-*).
-Job lưu ở `~/.cache/agy-jobs/<id>/`. Không có workspace/attach: xem log bằng `agy-ctl tail|history`.
+Job lưu ở `~/.cache/agy-jobs/<id>/` (trên Windows: `$HOME/.cache/agy-jobs/<id>/`). Không có workspace/attach: xem log bằng `agy-ctl tail|history`.
 
-## Cờ agy-sub.sh
+### Hỗ trợ Windows Native (PowerShell + CMD wrappers)
+
+Bộ script headless có sẵn bản chạy trực tiếp trên Windows trong `scripts/`:
+- `agy-sub.ps1` & `agy-sub.cmd`: Runner 1 subagent trên Windows, hỗ trợ đóng stdin chống treo, timeout watchdog kill cả cây tiến trình (`taskkill /PID <pid> /T /F`), git worktree cô lập (`-W`), mang thay đổi uncommitted (`-C`), chỉ đọc (`-R`), JSON schema (`-s`).
+- `agy-ctl.ps1` & `agy-ctl.cmd`: Quản lý, kiểm tra trạng thái (`status`, `tail`, `history`, `summary`), interrupt (`stop`), diff/merge/drop worktree, dọn dẹp (`gc`).
+- `agy-fan.ps1` & `agy-fan.cmd`: Chạy song song nhiều task (worker pool tối đa 4 subagents đồng thời), xuất bảng `SUMMARY.tsv`.
+- `agy-id.ps1` & `agy-id.cmd`: Cấp số phiên và nhãn nhiệm vụ cho Claude Code trên Windows.
+- **Không yêu cầu cài `jq` hay `bash`**: Sử dụng hoàn toàn bộ xử lý JSON (`ConvertFrom-Json`) và MD5 checksum của PowerShell / .NET 5.1+.
+- **Cách dùng trên Windows**: Thêm đường dẫn thư mục `scripts/` vào biến môi trường `PATH` (User hoặc System PATH). Sau đó trong PowerShell hoặc CMD / Claude Code, chỉ cần gõ `agy-sub`, `agy-ctl`, `agy-fan` như bình thường.
+
+## Cờ agy-sub.sh / agy-sub.ps1
 
 | Cờ | Ý nghĩa |
 |----|---------|
@@ -90,5 +100,6 @@ Job lưu ở `~/.cache/agy-jobs/<id>/`. Không có workspace/attach: xem log b�
 ## Allowlist quyền cho Claude Code (người dùng tự thêm vào `~/.claude/settings.json`, `permissions.allow`)
 
 ```json
-"Bash(agy-hd:*)", "Bash(agy-sub:*)", "Bash(agy-fan:*)", "Bash(agy-ctl:*)"
+"Bash(agy-hd:*)", "Bash(agy-sub:*)", "Bash(agy-fan:*)", "Bash(agy-ctl:*)",
+"PowerShell(agy-sub:*)", "PowerShell(agy-ctl:*)", "PowerShell(agy-fan:*)"
 ```
