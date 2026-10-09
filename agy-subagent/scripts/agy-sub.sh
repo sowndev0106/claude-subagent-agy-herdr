@@ -45,15 +45,19 @@ command -v agy >/dev/null || { echo "agy-sub: không thấy agy trong PATH" >&2;
 # Nhiều account (agy-p): chọn profile trong khoá, chia tải theo số job agy-sub đang chạy trên từng profile.
 AGYP=$(command -v agy-p 2>/dev/null || echo "$HOME/.local/bin/agy-p"); prof="" pemail=""
 if [[ -x $AGYP ]]; then
-  mkdir -p "$JOBS"; exec 8>"$JOBS/.pick.lock"; flock 8
-  prof=${acct:-${AGY_PROFILE:-}}
+  mkdir -p "$JOBS"; exec 8>"$JOBS/.pick.lock"; flock -w 120 8 || { echo "agy-sub: khoá chọn account bận quá 120 s" >&2; exit 2; }
+  prof=${acct:-${AGY_PROFILE:-}}; explicit=${prof:+1}
   if [[ -z $prof ]]; then
     loads=(); for m in "$JOBS"/*/meta.env; do [[ -f $m ]] || continue; p=$(sed -n "s/^PROFILE=//p" "$m"); pd=$(dirname "$m")
       [[ -n $p && -f $pd/pid && ! -f $pd/done ]] && kill -0 "$(<"$pd/pid")" 2>/dev/null && loads+=(--load "$p=1"); done
     prof=$("$AGYP" pick "${loads[@]}" 2>/dev/null) || prof=$("$AGYP" default | awk '{print $1}')
   fi
-  "$AGYP" env "$prof" >/dev/null || { echo "agy-sub: profile '$prof' không dùng được (agy-p ls)" >&2; exit 2; }
-  pemail=$("$AGYP" email "$prof")
+  if ! "$AGYP" env "$prof" >/dev/null 2>&1; then
+    [[ -n ${explicit:-} ]] && { echo "agy-sub: profile '$prof' không dùng được (agy-p ls)" >&2; exit 2; }
+    prof=""   # chưa có profile agy-p nào đăng nhập (vd chỉ đăng nhập bằng agy trần, token trong keyring): chạy agy như trước
+  fi
+  [[ -n $prof ]] && pemail=$("$AGYP" email "$prof")
+elif [[ -n $acct ]]; then echo "agy-sub: -u cần agy-p (skill agy-accounts)" >&2; exit 2
 fi
 [[ -d $workdir ]] || { echo "agy-sub: workdir không tồn tại: $workdir" >&2; exit 2; }
 workdir=$(cd "$workdir" && pwd)

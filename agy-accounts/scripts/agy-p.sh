@@ -5,8 +5,9 @@
 #                              không đặt tên thì profile mang tên theo email (phần trước @)
 #   agy-p add -i [tên]         như trên nhưng mở giao diện agy (dự phòng; xong gõ /exit)
 #   agy-p code <phiên> <mã>    đưa mã xác thực vào phiên add đang chờ (khi add chạy nền)
+#   agy-p help                 danh sách lệnh này
 #   agy-p ls                   các profile, email; dấu * là profile mặc định
-#   agy-p usage [--tsv] [--max-age giây] [tên...]   quota còn lại (chạy /usage song song; --tsv cho script, có cache)
+#   agy-p usage [--tsv [--max-age giây]] [tên...]   quota còn lại (chạy /usage song song; --tsv cho script, dùng cache)
 #   agy-p dash [--max-age giây] [--no-open]   trang HTML trực quan: quota từng account, account mặc định, account job mới sẽ dùng
 #   agy-p default [tên]        xem / đổi profile mặc định (dùng khi không chỉ định profile; agy-hd ưu tiên nó)
 #   agy-p pick [--load tên=n]... [--exclude tên]... [--exclude-email email]... [--min %]
@@ -37,6 +38,7 @@
 # Dùng chung với ~/.gemini: config/ (skills, plugins, MCP) và hội thoại (conversations, brain, implicit,
 # annotations), nên một hội thoại resume được bằng bất kỳ profile nào (--conversation <id>).
 # agy được gọi lồng bên trong (lệnh shell `agy ...`) cũng chạy bằng profile đó, nhờ shim trong scripts/shim.
+# Chỉ Linux (GNU find/stat/sed, bash >= 4.4, python3).
 set -euo pipefail
 ROOT=${AGY_PROFILES_DIR:-$HOME/.agy-profiles}
 MAIN=$HOME/.gemini
@@ -64,12 +66,15 @@ import json, base64, sys
 p = json.load(open(sys.argv[1]))["id_token"].split(".")[1]
 print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4))).get("email", ""))' "$(token "$1")" 2>/dev/null || true
 }
-default_profile() {  # $AGY_PROFILE, không có thì ~/.agy-profiles/.default, không có thì main
-  local p=${AGY_PROFILE:-}
-  [[ -n $p ]] || { [[ -f $ROOT/.default ]] && p=$(<"$ROOT/.default"); }
+default_profile() {  # $AGY_PROFILE (dùng nguyên, kể cả khi hỏng: lệnh chạy sẽ báo lỗi), không có thì .default, không có thì main
+  if [[ -n ${AGY_PROFILE:-} ]]; then echo "$AGY_PROFILE"; return; fi
+  local p=""; [[ -f $ROOT/.default ]] && p=$(<"$ROOT/.default")
   [[ -n $p && -n $(email "$p" 2>/dev/null) ]] || p=main
   echo "$p"
 }
+RESERVED=" main help add code ls usage dash default switch use whoami best pick env email rename relogin rm doctor top export import remote completion "
+# tên profile MỚI: hợp lệ và không trùng 'main' hay tên lệnh (agy-p <tên> sẽ bị hiểu thành lệnh)
+new_name_ok() { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $RESERVED != *" $1 "* ]]; }
 need_login() { valid "$1"; [[ -n $(email "$1") ]] || die "profile '$1' chưa có hoặc chưa đăng nhập. Tạo: agy-p add"; }
 
 # agy thật (bỏ qua shim nếu agy-p đang chạy lồng bên trong một profile)
@@ -137,12 +142,15 @@ purge_logins() {  # dọn kết quả/phiên đăng nhập bỏ dở: .result-* 
   done; return 0
 }
 
+put_result() { printf '%s\n' "$2" >"$1.tmp.$$" && mv -f "$1.tmp.$$" "$1"; }   # agy-p code không đọc phải file ghi dở
+
 cmd_add() {  # đăng nhập ẩn: in link, nhận mã (gõ vào, hoặc `agy-p code`), không mở giao diện agy
   local ui=0; [[ ${1:-} == -i ]] && { ui=1; shift; }
   local want=${1:-} p id e
   purge_logins
   if [[ -n $want ]]; then  # đặt tên sẵn
     valid "$want"; [[ $want != main ]] || die "'main' là ~/.gemini, đăng nhập bằng agy thường"
+    new_name_ok "$want" || die "'$want' trùng tên lệnh của agy-p, chọn tên khác"
     e=$(email "$want"); [[ -z $e ]] || die "profile '$want' đã đăng nhập ($e)"
     p=$want id=$want
   else                     # tên lấy theo email sau khi đăng nhập
@@ -155,28 +163,29 @@ cmd_add() {  # đăng nhập ẩn: in link, nhận mã (gõ vào, hoặc `agy-p 
     agy_in "$p" || true
   else
     echo "Phiên đăng nhập: $id   (gửi mã: agy-p code $id <mã>)"
-    rm -f "$fifo"; mkfifo -m 600 "$fifo"
+    rm -f "$fifo"; mkfifo -m 600 "$fifo"; trap 'rm -f "$fifo"' EXIT   # bị tắt giữa chừng: không để FIFO mồ côi (agy-p code sẽ treo)
     ( env_for "$p"; python3 "$HERE/login.py" --agy "$REAL" --gemini-dir "$d" --fifo "$fifo" ) || rc=$?
-    rm -f "$fifo"
+    rm -f "$fifo"; trap - EXIT
   fi
   e=$(email "$p")
   if [[ -z $e ]]; then
     [[ $p == .login-* ]] && rm -rf -- "$d"
-    echo "FAIL chưa đăng nhập được (mã $rc)" >"$res"; die "chưa đăng nhập được (mã $rc). Chạy lại: agy-p add"
+    put_result "$res" "FAIL chưa đăng nhập được (mã $rc)"; die "chưa đăng nhập được (mã $rc). Chạy lại: agy-p add"
   fi
   local q name
   if [[ $p == .login-* ]]; then
     for q in $(profiles); do
       if [[ $q != main && $(email "$q") == "$e" ]]; then
-        rm -rf -- "$d"; echo "FAIL $e đã có ở profile '$q'" >"$res"; die "$e đã có ở profile '$q' (bỏ lần đăng nhập này)"
+        rm -rf -- "$d"; put_result "$res" "FAIL $e đã có ở profile '$q'"; die "$e đã có ở profile '$q' (bỏ lần đăng nhập này)"
       fi
     done
     name=$(printf '%s' "${e%@*}" | tr -c 'A-Za-z0-9._-' '-')
+    new_name_ok "$name" || name=acct-$name; new_name_ok "$name" || name=acct-$id   # vd main@ / ls@ / _x@
     [[ ! -e $ROOT/$name ]] || name=$name-$id
     mv -- "$d" "$ROOT/$name"; p=$name
   fi
   rm -f "$CACHE"   # quota cache không còn đủ profile
-  echo "OK $p $e" >"$res"
+  put_result "$res" "OK $p $e"
   echo "Profile '$p' đã đăng nhập: $e"
   [[ $(email main) != "$e" ]] || echo "Lưu ý: cùng account với 'main' (~/.gemini), không thêm quota"
   return 0
@@ -188,7 +197,8 @@ cmd_code() {  # agy-p code <phiên|tên> <mã>: đưa mã xác thực vào phiê
   local fifo=$ROOT/.login-$id/.login-code res=$ROOT/.result-$id i
   [[ -p $fifo ]] || fifo=$ROOT/$id/.login-code
   [[ -p $fifo ]] || die "không có phiên đăng nhập '$id' nào đang chờ mã"
-  printf '%s\n' "$code" >"$fifo"
+  timeout 10 bash -c 'printf "%s\n" "$1" >"$2"' _ "$code" "$fifo" \
+    || die "không có phiên agy-p add nào đang đọc mã '$id' (đã hết giờ hoặc bị tắt?): chạy lại agy-p add"
   for i in $(seq 120); do
     if [[ -f $res ]]; then
       local r; r=$(<"$res"); rm -f "$res"
@@ -217,8 +227,8 @@ cmd_default() {
 
 cmd_env() {
   local p=${1:-}; need_login "$p"; prepare "$p"
-  printf "export SSH_CONNECTION=\"\${SSH_CONNECTION:-agy-profile}\" AGY_REAL='%s' AGY_GEMINI_DIR='%s' AGY_PROFILE_ACTIVE='%s'\n" "$REAL" "$(dir "$p")" "$p"
-  printf "case \":\$PATH:\" in *':%s:'*) ;; *) export PATH='%s':\"\$PATH\" ;; esac\n" "$SHIM" "$SHIM"
+  printf 'export SSH_CONNECTION="${SSH_CONNECTION:-agy-profile}" AGY_REAL=%q AGY_GEMINI_DIR=%q AGY_PROFILE_ACTIVE=%q\n' "$REAL" "$(dir "$p")" "$p"
+  printf 'case ":$PATH:" in *:%q:*) ;; *) export PATH=%q:"$PATH" ;; esac\n' "$SHIM" "$SHIM"
 }
 
 # usage: chạy `/usage` của từng profile song song. Kết quả máy đọc (cũng là cache $CACHE), mỗi dòng:
@@ -264,11 +274,11 @@ cmd_usage() {
     if [[ ${#ps[@]} -eq 0 ]]; then usage_tsv "$age"; else usage_tsv "$age" | awk -F'\t' -v l=" ${ps[*]} " 'index(l, " "$1" ")'; fi
     return 0
   fi
-  [[ ${#ps[@]} -gt 0 ]] || mapfile -t ps < <(profiles)
+  local all=0; [[ ${#ps[@]} -gt 0 ]] || { mapfile -t ps < <(profiles); all=1; }
   for p in "${ps[@]}"; do valid "$p"; [[ -d $(dir "$p") ]] || die "không có profile '$p'"; done
   local tmp; tmp=$(mktemp -d)
   fetch_usage "$tmp" "${ps[@]}"
-  [[ ${#ps[@]} -eq $(profiles | wc -l) ]] && { mkdir -p "$ROOT"; cp "$tmp/usage.tsv" "$CACHE"; }
+  (( all )) && { mkdir -p "$ROOT"; cp "$tmp/usage.tsv" "$CACHE.$$" && mv -f "$CACHE.$$" "$CACHE"; }
   python3 - "$tmp/usage.tsv" <<'EOF'
 import sys, datetime
 def local(ts):
@@ -327,7 +337,7 @@ cmd_dash() {
   while [[ $# -gt 0 ]]; do case $1 in --max-age) age=$2; shift;; --out) out=$2; shift;; --fragment) frag=$2; shift;;
     --no-open) open=0;; *) die "dash: không hiểu '$1'";; esac; shift; done
   local tsv pick jobs jd p; tsv=$(usage_tsv "$age")
-  pick=$(cmd_pick --max-age 600 2>/dev/null) || pick=""
+  local la; mapfile -t la < <(hd_loads); pick=$(cmd_pick --max-age 600 "${la[@]}" 2>/dev/null) || pick=""
   jobs=$(for jd in "${AGY_HD_JOBS:-$HOME/.cache/agy-hd}"/a-*/meta.env; do [[ -f $jd ]] || continue
     grep -q '^CLOSED=1' "$jd" && continue; grep -qE '^TICK_STATE=(DONE|STOPPED)$' "$jd" && continue
     p=$(sed -n 's/^PROFILE=//p' "$jd" | tail -1); [[ -n $p ]] && echo "$p"; done | sort | uniq -c)
@@ -390,6 +400,7 @@ cmd_whoami() {
   if [[ -n ${AGY_PROFILE:-} ]]; then src="biến AGY_PROFILE của terminal này"
   elif [[ -f $ROOT/.default ]]; then src="account mặc định (agy-p default)"; else src="main, vì chưa đặt mặc định"; fi
   echo "agy-p ở terminal này   : $p ($(email "$p"))   ← $src"
+  [[ -n $(email "$p") ]] || echo "  ! profile '$p' chưa đăng nhập hoặc không còn: agy-p sẽ báo lỗi thay vì chạy (eval \"\$(agy-p use --unset)\" để bỏ)"
   [[ -n ${AGY_PROFILE_ACTIVE:-} ]] && echo "đang ở trong agy của   : $AGY_PROFILE_ACTIVE ($(email "$AGY_PROFILE_ACTIVE"))"
   usage_tsv 300 | awk -F'\t' -v p="$p" '$1==p { printf "quota (cache ≤ 5 phút) : Gemini tuần %s%%, 5 giờ %s%% · Claude tuần %s%%\n", $3, $4, $5 }'
   if [[ -n ${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-} ]]; then echo "agy trần ở terminal này: ~/.gemini (file token) → $(email main)"
@@ -419,12 +430,14 @@ cmd_best() {  # bỏ qua ưu tiên mặc định: account có quota Gemini / (1 
 cmd_rename() {
   local a=${1:-} b=${2:-} m; valid "$a"; valid "$b"
   [[ $a != main && $b != main ]] || die "không đổi tên 'main' (~/.gemini)"
+  new_name_ok "$b" || die "'$b' trùng tên lệnh của agy-p, chọn tên khác"
   [[ -d $(dir "$a") ]] || die "không có profile '$a'"; [[ ! -e $(dir "$b") ]] || die "đã có profile '$b'"
   in_use "$a" && die "đang có agy chạy bằng '$a': tắt/park các phiên đó rồi đổi tên"
   mv -- "$(dir "$a")" "$(dir "$b")"
   [[ -f $ROOT/.default && $(<"$ROOT/.default") == "$a" ]] && printf '%s\n' "$b" >"$ROOT/.default"
   for m in "${AGY_HD_JOBS:-$HOME/.cache/agy-hd}"/*/meta.env "${AGY_JOBS:-$HOME/.cache/agy-jobs}"/*/meta.env; do
-    [[ -f $m ]] && grep -qx "PROFILE=$a" "$m" && sed -i "s/^PROFILE=$a\$/PROFILE=$b/" "$m"
+    # so khớp chính xác (tên có thể chứa '.', không để regex khớp nhầm profile khác)
+    [[ -f $m ]] && grep -qxF "PROFILE=$a" "$m" && sed -i "s/^PROFILE=${a//./\\.}\$/PROFILE=$b/" "$m"
   done
   rm -f "$CACHE"; echo "Đã đổi tên profile '$a' → '$b'"
 }
@@ -449,7 +462,7 @@ cmd_doctor() {
   no()   { echo "  ✗ $*"; bad=$((bad+1)); }
   hmm()  { echo "  ! $*"; warn=$((warn+1)); }
   echo "agy"
-  v=$("$REAL" --version 2>/dev/null | head -1); [[ -n $v ]] && ok "agy $v ($REAL)" || no "không chạy được $REAL --version"
+  v=$("$REAL" --version 2>/dev/null | head -1) || true; [[ -n $v ]] && ok "agy $v ($REAL)" || no "không chạy được $REAL --version"
   T=$(mktemp -d)
   v=$(SSH_CONNECTION=agy-doctor timeout 40 "$REAL" --gemini_dir="$T" models </dev/null 2>&1 || true)   # lấy hết output trước (pipefail + grep -q)
   if grep -qi 'sign in' <<<"$v"; then ok "cờ ẩn --gemini_dir còn tác dụng (thư mục mới → chưa đăng nhập)"
@@ -479,7 +492,7 @@ cmd_doctor() {
   local stale; stale=$(find "$ROOT" -maxdepth 1 \( -name '.result-*' -o -name '.login-*' \) -mmin +20 2>/dev/null | wc -l)
   (( stale )) && hmm "$stale file/thư mục đăng nhập bỏ dở trong $ROOT (lần agy-p add sau sẽ tự dọn)"
   echo "agy-hd"
-  local hd; hd=$(command -v agy-hd 2>/dev/null)
+  local hd; hd=$(command -v agy-hd 2>/dev/null) || true
   if [[ -z $hd ]]; then hmm "không có agy-hd trong PATH (skill agy-subagent)"
   else grep -q 'agy-p' "$(readlink -f "$hd")" && ok "agy-hd biết dùng agy-p (-u, tự chọn, đổi account khi hết quota)" || no "agy-hd chưa tích hợp agy-p"
     systemctl --user is-active agy-hd-tick.timer >/dev/null 2>&1 && ok "timer agy-hd-tick đang chạy (kiểm job mỗi phút)" || hmm "timer agy-hd-tick không chạy: systemctl --user enable --now agy-hd-tick.timer"
@@ -535,15 +548,17 @@ cmd_export() {
   cp -p "$(token "$p")" "$tmp/agy-p-profile/antigravity-oauth-token"
   [[ -f $(dir "$p")/antigravity-cli/settings.json ]] && cp "$(dir "$p")/antigravity-cli/settings.json" "$tmp/agy-p-profile/"
   if [[ $out == - ]]; then tar -C "$tmp" -czf - agy-p-profile
-  else (umask 077; tar -C "$tmp" -czf "$out" agy-p-profile); echo "Đã xuất '$p' ra $out (CHỨA TOKEN đăng nhập: giữ kín, xoá sau khi import)" >&2; fi
+  else local o2; o2=$(mktemp "$(dirname "$out")/.agy-export.XXXXXX")   # mktemp = 600; mv thay file cũ (không giữ quyền cũ)
+    tar -C "$tmp" -czf "$o2" agy-p-profile && mv -f "$o2" "$out"; echo "Đã xuất '$p' ra $out (CHỨA TOKEN đăng nhập: giữ kín, xoá sau khi import)" >&2; fi
   rm -rf "$tmp"
 }
 
 cmd_import() {
-  local src=${1:--} want=${2:-} tmp e name q
-  tmp=$(mktemp -d); chmod 700 "$tmp"
+  local src=${1:--} want=${2:-} e name q
+  tmp=$(mktemp -d); chmod 700 "$tmp"; trap 'rm -rf "$tmp"' EXIT   # bản copy token không nằm lại khi lỗi
   if [[ $src == - ]]; then tar -C "$tmp" -xzf -; else tar -C "$tmp" -xzf "$src"; fi
-  [[ -f $tmp/agy-p-profile/antigravity-oauth-token ]] || { rm -rf "$tmp"; die "không phải gói của agy-p export"; }
+  [[ -f $tmp/agy-p-profile/antigravity-oauth-token && ! -L $tmp/agy-p-profile/antigravity-oauth-token ]] || die "không phải gói của agy-p export"
+  [[ ! -L $tmp/agy-p-profile/settings.json ]] || die "gói có symlink: từ chối"
   e=$(python3 -c '
 import json, base64, sys
 p = json.load(open(sys.argv[1]))["id_token"].split(".")[1]
@@ -551,6 +566,7 @@ print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))["email"])' "
     || { rm -rf "$tmp"; die "token trong gói không đọc được"; }
   for q in $(profiles); do [[ $(email "$q") == "$e" ]] && { rm -rf "$tmp"; die "$e đã có ở profile '$q' trên máy này"; }; done
   name=${want:-$(printf '%s' "${e%@*}" | tr -c 'A-Za-z0-9._-' '-')}; valid "$name"
+  new_name_ok "$name" || die "'$name' trùng tên lệnh của agy-p: agy-p import <file> <tên khác>"
   [[ ! -e $(dir "$name") ]] || { rm -rf "$tmp"; die "đã có profile '$name' (đặt tên khác: agy-p import <file> <tên>)"; }
   mkdir -p "$(dir "$name")/antigravity-cli"
   install -m 600 "$tmp/agy-p-profile/antigravity-oauth-token" "$(token "$name")"
@@ -565,14 +581,14 @@ cmd_remote() {
   local rp='PATH="$HOME/.local/bin:$PATH" agy-p' tty=()
   [[ -t 0 && -t 1 ]] && tty=(-t)
   case $sub in
-    push) cmd_export "${1:?tên profile}" | ssh ${AGY_SSH_OPTS:-} "$host" "$rp import - ${2:-}" ;;
-    pull) ssh ${AGY_SSH_OPTS:-} "$host" "$rp export ${1:?tên profile}" | cmd_import - "${2:-}" ;;
-    *)    ssh "${tty[@]}" ${AGY_SSH_OPTS:-} "$host" "$rp $sub $(printf '%q ' "$@")" ;;
+    push) valid "${1:-}"; cmd_export "$1" | ssh ${AGY_SSH_OPTS:-} "$host" "$rp import - $(printf '%q' "${2:-}")" ;;
+    pull) valid "${1:-}"; ssh ${AGY_SSH_OPTS:-} "$host" "$rp export $(printf '%q' "$1")" | cmd_import - "${2:-}" ;;
+    *)    ssh "${tty[@]}" ${AGY_SSH_OPTS:-} "$host" "$rp $(printf '%q ' "$sub" "$@")" ;;
   esac
 }
 
 cmd_completion() {
-  local subs="add code ls usage dash default switch use whoami best pick env email rename relogin rm doctor top export import remote completion"
+  local subs="help add code ls usage dash default switch use whoami best pick env email rename relogin rm doctor top export import remote completion"
   [[ ${1:-} == zsh ]] && echo 'autoload -U +X bashcompinit 2>/dev/null && bashcompinit'
   cat <<EOF
 _agy_p() {
@@ -593,6 +609,7 @@ cmd_rm() {
   local p=${1:-}; valid "$p"
   [[ $p != main ]] || die "không xoá 'main' (~/.gemini)"
   [[ -d $(dir "$p") ]] || die "không có profile '$p'"
+  in_use "$p" && die "đang có agy chạy bằng '$p': tắt/park các phiên đó rồi xoá"
   if (( ! yes )); then
     local e ans; e=$(email "$p")
     read -r -p "Xoá profile '$p' (${e:-chưa đăng nhập})? Gõ lại tên để xác nhận: " ans
@@ -605,6 +622,7 @@ cmd_rm() {
 }
 
 case ${1:-} in
+  help|-h|--help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//' ;;
   add)     shift; cmd_add "$@" ;;
   code)    shift; cmd_code "$@" ;;
   ls)      shift; cmd_ls ;;
@@ -627,6 +645,8 @@ case ${1:-} in
   completion) shift; cmd_completion "$@" ;;
   email)   shift; valid "${1:-}"; email "$1" ;;
   rm)      shift; cmd_rm "$@" ;;
-  ""|-*)   p=$(default_profile); need_login "$p"; prepare "$p"; run_in "$p" "$@" ;;
+  ""|-*)   p=$(default_profile)
+           [[ -z ${AGY_PROFILE:-} || -n $(email "$p" 2>/dev/null) ]] || die "AGY_PROFILE=$p chưa đăng nhập hoặc không còn (đổi: eval \"\$(agy-p use <tên>)\", bỏ: eval \"\$(agy-p use --unset)\")"
+           need_login "$p"; prepare "$p"; run_in "$p" "$@" ;;
   *)       p=$1; shift; need_login "$p"; prepare "$p"; run_in "$p" "$@" ;;
 esac

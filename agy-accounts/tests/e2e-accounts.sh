@@ -2,12 +2,12 @@
 # E2E nhiều account cho agy-hd + agy-p + agy-sub, chạy trong herdr session cas (gọi agy thật, ~15 phút).
 # In PASS/FAIL từng mục (D1..D10), cuối cùng đóng mọi job đã tạo và kiểm không còn tiến trình sót.
 #   E2E_ACCOUNT=<profile còn quota>      mặc định: agy-p pick
-#   E2E_EXHAUSTED=<profile hết quota 5h>  để test tự đổi account khi hết quota (D4); không đặt thì bỏ qua D4
+#   E2E_EXHAUSTED=<profile hết quota>     D4 dùng quota hết thật (tick tự restart); không có thì D4 gọi agy-hd restart như tick
 set -uo pipefail
 S=$(mktemp -d "${TMPDIR:-/tmp}/agy-e2e.XXXXXX"); W=$S/work; mkdir -p "$W"; LOG=$S/e2e.log; : >"$LOG"
 A=${E2E_ACCOUNT:-$(agy-p pick)}; AE=$(agy-p email "$A"); EXH=${E2E_EXHAUSTED:-}
 [[ -n $AE ]] || { echo "E2E_ACCOUNT '$A' chưa đăng nhập"; exit 2; }
-echo "account chính: $A ($AE); account hết quota: ${EXH:-không có, bỏ qua D4}; log: $LOG"
+echo "account chính: $A ($AE); account hết quota: ${EXH:-không có, D4 gọi agy-hd restart}; log: $LOG"
 JOBS=(); pass=0; fail=0
 ok()  { echo "PASS  $*"; pass=$((pass+1)); }
 bad() { echo "FAIL  $*"; fail=$((fail+1)); }
@@ -37,17 +37,31 @@ for k in 1 2 3 4; do a=$(sed -n 's/^ACCOUNT=\([^ ]*\).*/\1/p' "$F/res/t$k.out" |
 # kỳ vọng: account thứ hai đủ quota (≥ 1/4 account tốt nhất) thì phải chia ≥ 2 account; không thì dồn 1 account là đúng
 read -r best second < <(agy-p usage --tsv --max-age 600 | awk -F'\t' '$2!="-"{q=($3<$4?$3:$4); if(!(($2) in s) || q>s[$2]) s[$2]=q} END{for(e in s) if(s[e]>=5) print s[e]}' | sort -rn | head -2 | tr '\n' ' ')
 nacc=$(tr ' ' '\n' <<<"$accts" | grep -v '^$' | sort -u | wc -l); want=1; [[ -n ${second:-} ]] && (( second * 4 >= best )) && want=2
-(( good == 4 && nacc >= want )) && ok "D3 fan 4 task: chia cho${accts} (quota tốt nhất ${best}%, kế tiếp ${second:+${second}%}${second:-không có}: cần ≥ $want account); 4/4 tự báo đúng" \
+(( good == 4 && nacc >= want )) && ok "D3 fan 4 task: chia cho${accts} (quota tốt nhất ${best}%, kế tiếp $([[ -n ${second:-} ]] && echo "${second}%" || echo không có): cần ≥ $want account); 4/4 tự báo đúng" \
   || bad "D3 ($good/4 đúng; account:$accts; cần ≥ $want account)"
 
-# D4: hết quota → tick đổi account, cùng conversation
-say D4; if [[ -z $EXH ]]; then echo "SKIP  D4 (đặt E2E_EXHAUSTED=<profile hết quota 5 giờ> để chạy)"; else o=$(agy-hd start -n e2e-d4 -d "$W" -u $EXH -A -p 'Chạy lệnh shell echo $AGY_PROFILE_ACTIVE rồi trả lời đúng 1 dòng: D4 PROFILE=<output>' 2>&1); echo "$o" >>"$LOG"
-J4=$(jobof "$o"); JOBS+=("$J4")
-for i in $(seq 72); do agy-hd result "$J4" 2>/dev/null | grep -q 'D4 PROFILE=' && break; sleep 5; done
-r=$(agy-hd result "$J4" 2>/dev/null | grep -oE 'D4 PROFILE=[^ ]*' | head -1); p4=$(meta "$J4" PROFILE); rs=$(meta "$J4" RESTARTS)
-[[ -n $r && ${r#D4 PROFILE=} == "$p4" && $p4 != $EXH && ${rs:-0} -ge 1 ]] \
-  && ok "D4 hết quota: $EXH → $p4 sau $rs lần restart, conversation $(agy-hd access "$J4" 2>/dev/null | grep -oE 'brain/[0-9a-f-]{8}' | head -1)" \
-  || bad "D4 (result=$r, PROFILE=$p4, RESTARTS=$rs)"; fi
+# D4: hết quota → đổi account, cùng conversation.
+#  - E2E_EXHAUSTED đặt và account đó thật sự hết quota (< 5%): job chạy trên nó, tick tự phát hiện và restart.
+#  - Không thì gọi thẳng `agy-hd restart` (đúng hàm tick gọi khi thấy QUOTA) cho một job đang chạy trên $A.
+say D4
+q_of() { agy-p usage --tsv --max-age 0 | awk -F'\t' -v p="$1" '$1==p { print ($3<$4?$3:$4) }'; }
+OTH=$(agy-p pick --exclude-email "$AE" 2>/dev/null) || OTH=""
+P4='Lần đầu: trả lời đúng 1 dòng: D4 START. Khi được bảo làm tiếp: chạy lệnh shell echo $AGY_PROFILE_ACTIVE rồi trả lời đúng 1 dòng: D4 PROFILE=<output>'
+if [[ -n $EXH && $(q_of "$EXH") -lt 5 ]]; then MODE="quota hết thật, tick tự restart"; SRC=$EXH
+elif [[ -n $OTH ]]; then MODE="agy-hd restart như tick"; SRC=$A
+else MODE=""; fi
+if [[ -z $MODE ]]; then echo "SKIP  D4 (cần một account khác còn quota để chuyển sang)"
+else
+  o=$(agy-hd start -n e2e-d4 -d "$W" -u "$SRC" -t 180 -p "$P4" 2>&1); echo "$o" >>"$LOG"
+  J4=$(jobof "$o"); JOBS+=("$J4"); c0=$(agy-hd access "$J4" 2>/dev/null | grep -oE 'brain/[0-9a-f-]{36}' | head -1)
+  [[ $SRC == "$A" ]] && agy-hd restart "$J4" >>"$LOG" 2>&1
+  for i in $(seq 72); do agy-hd result "$J4" 2>/dev/null | grep -q 'D4 PROFILE=' && break; sleep 5; done
+  r=$(agy-hd result "$J4" 2>/dev/null | grep -oE 'D4 PROFILE=[^ ]*' | head -1); p4=$(meta "$J4" PROFILE); rs=$(meta "$J4" RESTARTS)
+  c1=$(agy-hd access "$J4" 2>/dev/null | grep -oE 'brain/[0-9a-f-]{36}' | head -1)
+  [[ -n $r && ${r#D4 PROFILE=} == "$p4" && $p4 != "$SRC" && ${rs:-0} -ge 1 && -n $c0 && $c0 == "$c1" && -z $(meta "$J4" RESTARTING) ]] \
+    && ok "D4 hết quota ($MODE): $SRC → $p4 sau $rs lần restart, cùng conversation ${c1#brain/}" \
+    || bad "D4 ($MODE: result=$r, PROFILE=$p4, RESTARTS=$rs, conv $c0 → $c1)"
+fi
 
 # D5: agy-hd switch D1 sang account khác còn quota (không có thì cùng account), vẫn nhớ câu trả lời cũ
 say D5; OTHER=$(agy-p pick --exclude-email $AE 2>/dev/null) || OTHER=$A
@@ -66,6 +80,7 @@ say D7; PD=$( [[ $OTHER == main ]] && echo ~/.gemini || echo ~/.agy-profiles/$OT
 o=$(agy-hd prompt "$J1" "Chạy đúng lệnh shell này (chờ xong) rồi trả lời đúng 1 dòng 'D7 OK' kèm output: agy -p 'Reply with exactly: NESTED' --output-format json --print-timeout 90s" -t 240 2>&1); echo "$o" >>"$LOG"
 L1=$(ls $PD/antigravity-cli/log | wc -l)
 leak=$(comm -13 <(echo "$M0") <(ls ~/.gemini/antigravity-cli/log) | while read -r f; do grep -lq "$W" ~/.gemini/antigravity-cli/log/"$f" 2>/dev/null && echo "$f"; done)
+[[ $OTHER == main ]] && leak=""   # job đang ở profile main (= ~/.gemini): log của agy lồng nằm ở đó là đúng
 grep -q 'NESTED' <<<"$o" && (( L1 > L0 )) && [[ -z $leak ]] && ok "D7 agy lồng chạy bằng profile của job (log mới: $((L1-L0)) ở $OTHER, 0 ở ~/.gemini)" || bad "D7 (NESTED? $(grep -c NESTED <<<"$o"); log mới profile=$((L1-L0)); rò sang main: ${leak:-0})"
 
 # D8: agy-sub -u và tự chọn

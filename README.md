@@ -109,18 +109,22 @@ or `agy-p export <profile> file.tgz` / `agy-p import file.tgz` (the file contain
 * How it works: agy stores the token in a file only when an SSH variable is set, otherwise in one gnome-keyring entry shared by every profile. agy-p always sets `SSH_CONNECTION` and passes agy's hidden `--gemini_dir` flag. Re-check after `agy update` with `agy-p doctor`.
 * Switch the default with `agy-p switch`, not `/logout` + `/login` in `~/.gemini`: another running session refreshes its token and writes the old account back.
 
-### Tests (2026-10-08, real accounts, herdr session `cas`)
+### Tests (2026-10-08/09, real accounts, herdr session `cas`)
 
 | Suite | Result |
 |---|---|
 | `selftest.sh` (agy-sub / agy-ctl / agy-fan) from a fresh clone of this repo | 29 / 29 PASS |
-| `agy-accounts/tests/concurrency.sh`: 4 parallel `start`, job lock (`park` waits, `switch` + `park` serialize), 4 simultaneous `resume` while `tick` runs | 7 / 7 PASS |
-| `agy-accounts/tests/e2e-accounts.sh`: `-u`, auto-pick, `fan` spread, subagent wait, quota failover with the same conversation, `switch`, immediate park/resume, nested agy, `agy-sub -u`, `accounts` | 10 / 10 PASS |
-| Cross-account `switch` and `fan` split over two accounts (needs two accounts with quota at test time) | PASS earlier the same day |
+| `agy-accounts/tests/concurrency.sh`: 4 parallel `start`, job lock (`park` waits, `switch` + `park` serialize), 4 simultaneous `resume` while `tick` runs | 7 / 7 PASS (again after the final review fixes) |
+| `agy-accounts/tests/e2e-accounts.sh`: `-u`, auto-pick, `fan` spread, subagent wait, quota failover with the same conversation, `switch`, immediate park/resume, nested agy, `agy-sub -u`, `accounts` | 10 / 10 PASS; after the final review fixes 9 / 10, the one failure was the test's own D7 check (fixed) |
+| Cross-account `switch`, `fan` split over two accounts, quota failover to another account | PASS (2026-10-09, after the review fixes) |
+| Final review fix checks: 14 `agy-p` / `login.py` cases, 7 `agy-hd` / `agy-sub` cases | all PASS |
 
 ---
 
 ## 🚀 Installation
+
+Requirements: Linux (GNU coreutils, bash ≥ 4.4), `agy`, `herdr`, `git`, `jq`, `python3`. The headless runners also ship as
+PowerShell scripts for Windows; `agy-hd` and `agy-p` are Linux-only.
 
 ### 1. Clone repository
 ```bash

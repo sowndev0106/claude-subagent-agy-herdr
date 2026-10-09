@@ -131,7 +131,8 @@ Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab l
 - Xem quota: `agy-p usage`. Thêm account: `agy-p add` (xem skill agy-accounts). Chuyển một job: `agy-hd switch <job> [profile]`;
   bảng account + job: `agy-hd accounts`.
 - **Khoá theo job**: `park`/`resume`/`restart`/`switch`/`interrupt`/`close` và tick không đổi trạng thái cùng một job một lúc
-  (lệnh tay chờ tối đa 120 s; tick thấy job bận thì để vòng sau). `prompt` chỉ giữ khoá lúc gửi.
+  (lệnh tay chờ tối đa 120 s; tick thấy job bận thì để vòng sau). `prompt` đợi restart/switch đang chạy xong rồi mới gửi,
+  và không giữ khoá trong lúc chờ agy trả lời.
 
 ## Hết hạn mức Antigravity (quota)
 
@@ -142,7 +143,8 @@ Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab l
   3. gửi prompt "làm tiếp việc dở, xem lại file đã ghi, không làm lại từ đầu".
   Ngày 2026-10-05 cách này cứu được cả 4 agent: chúng chấm tiếp đúng chỗ dở (125 → 249 nhãn) rồi xong.
 - **tick tự làm việc này** cho job ở trạng thái QUOTA: tối đa 5 lần mỗi job, cách nhau ít nhất 3 phút (1 phút nếu job chạy qua agy-p), mỗi lần ghi vào `events.log`.
-  Job chạy qua agy-p thì restart **chuyển sang account khác còn quota** (`QUOTA_EMAILS` trong meta ghi các account đã hết), rồi
+  Job chạy qua agy-p thì restart **chuyển sang account khác còn quota** (loại account vừa hết, `QUOTA_EMAILS` trong meta ghi account đó; account khác chỉ bị
+  loại khi quota lấy mới dưới 5%, nên account đã hồi quota được chọn lại), rồi
   resume đúng conversation; không còn account nào thì mở lại trên account cũ. Đã e2e 2026-10-08: account hết quota 5 giờ (0%) → account khác, cùng conversation, xong việc. Sau 5 lần vẫn hết hạn mức thì tick ghi `QUOTA_GAVE_UP`. Lúc đó **báo người dùng**, kèm thời gian "Resets in" trên màn hình, đừng restart vòng vòng.
 - Việc có file đầu ra ghi dần (ví dụ labels.jsonl) nên được thiết kế để làm tiếp được: ghi theo lô, có script kiểm tra. Sau khi job DONE, kiểm lại số dòng hoặc chạy script kiểm tra.
 

@@ -29,8 +29,8 @@ rồi đăng file fragment bằng Artifact (cùng đường dẫn để giữ UR
 - **agy-quota**: xem limit (dashboard, `top`, `usage`, `whoami`).
 - **agy-switch**: đổi account (mặc định, terminal, một job agy-hd, tự động theo quota).
 
-Lệnh đủ bộ (`agy-p` không tham số để xem đầu file script): `add code ls usage dash default switch use whoami best
-pick env email rename relogin rm doctor top export import remote completion`. agy-hd thêm `-u`, `switch`, `accounts`.
+Lệnh đủ bộ (`agy-p help` để xem): `help add code ls usage dash default switch use whoami best pick env email rename
+relogin rm doctor top export import remote completion`. Chỉ chạy trên Linux (GNU coreutils, bash >= 4.4, python3). agy-hd thêm `-u`, `switch`, `accounts`.
 Có vấn đề thì chạy `agy-p doctor` trước.
 
 ## Đăng nhập account mới (workflow)
@@ -71,8 +71,9 @@ Hết quota giữa chừng: tick của agy-hd chuyển job sang account khác v�
 
 - `agy-subagent/scripts/selftest.sh`: agy-sub / agy-ctl / agy-fan (~5 phút).
 - `agy-accounts/tests/concurrency.sh`: 4 start song song, khoá job, resume đồng loạt khi tick chạy (~8 phút).
-- `E2E_ACCOUNT=<p> E2E_EXHAUSTED=<p hết quota 5h> agy-accounts/tests/e2e-accounts.sh`: -u, tự chọn, fan, chờ subagent,
-  đổi account khi hết quota, switch, park/resume, agy lồng, agy-sub (~15 phút).
+- `E2E_ACCOUNT=<p> [E2E_EXHAUSTED=<p hết quota>] agy-accounts/tests/e2e-accounts.sh`: -u, tự chọn, fan, chờ subagent,
+  đổi account khi hết quota, switch, park/resume, agy lồng, agy-sub (~15 phút). Không có account hết quota thật thì D4
+  gọi `agy-hd restart` (hàm tick dùng) thay vì chờ tick.
 - Kết quả phụ thuộc quota lúc chạy: fan chỉ chia nhiều account khi account thứ hai còn ≥ 1/4 quota của account tốt nhất.
 
 ## Cơ chế (khi cần sửa)

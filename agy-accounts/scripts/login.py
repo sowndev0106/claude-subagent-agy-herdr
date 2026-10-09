@@ -64,18 +64,29 @@ def wait_for(pred, timeout, what):
 
 
 def stop():
+    # agy là trưởng nhóm tiến trình (pty.fork → setsid): tín hiệu gửi cả nhóm để MCP server con (npm exec ...) cũng tắt
     for sig in (None, None, signal.SIGTERM, signal.SIGKILL):
         try:
             if sig is None:
                 os.write(fd, b"\x03")
             else:
-                os.kill(pid, sig)
+                os.killpg(pid, sig)
         except OSError:
             pass
         for _ in range(10):
-            if os.waitpid(pid, os.WNOHANG)[0]:
-                return
+            try:
+                if os.waitpid(pid, os.WNOHANG)[0]:
+                    break
+            except ChildProcessError:
+                break
             time.sleep(0.2)
+        else:
+            continue
+        break
+    try:
+        os.killpg(pid, signal.SIGKILL)   # dọn tiến trình con còn sót trong nhóm sau khi agy đã thoát
+    except OSError:
+        pass
 
 
 def fail(msg):
@@ -110,14 +121,15 @@ url = wait_for(find_url, 60, "link đăng nhập")
 url = url.replace("prompt=consent", "prompt=select_account%20consent", 1)
 print(f"URL: {url}", flush=True)
 
+# Nhận mã từ FIFO (agy-p code, chạy ở bất kỳ đâu) và, nếu là terminal, từ bàn phím: bên nào gửi trước thì dùng
 src = []
-if sys.stdin.isatty():
-    print("Dán mã xác thực rồi Enter: ", end="", flush=True)
-    src = [sys.stdin.fileno()]
-elif args.fifo:
-    src = [os.open(args.fifo, os.O_RDWR | os.O_NONBLOCK)]  # O_RDWR: không bị EOF khi chưa có ai ghi
+if args.fifo:
+    src.append(os.open(args.fifo, os.O_RDWR | os.O_NONBLOCK))  # O_RDWR: không bị EOF khi chưa có ai ghi
     print(f"Chờ mã: agy-p code <phiên> <mã>  (tối đa {args.timeout}s)", flush=True)
-else:
+if sys.stdin.isatty():
+    print("Hoặc dán mã xác thực ở đây rồi Enter: ", end="", flush=True)
+    src.append(sys.stdin.fileno())
+if not src:
     raise SystemExit(fail("không có chỗ nhận mã (cần terminal hoặc --fifo)"))
 
 code, end = "", time.time() + args.timeout
@@ -127,7 +139,7 @@ while not code.endswith("\n"):
         print("Hết giờ chờ mã xác thực", file=sys.stderr)
         raise SystemExit(3)
     for r in pump(0.5, src):
-        code += os.read(r, 4096).decode()
+        code += os.read(r, 4096).decode("utf-8", "replace")
 code = code.strip()
 os.write(fd, code.encode())
 time.sleep(0.3)
