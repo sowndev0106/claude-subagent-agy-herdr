@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Chạy agy (Antigravity CLI) như một subagent trên Windows: 1 prompt vào, kết quả gọn ra.
@@ -97,7 +97,7 @@ if (-not $agyCmd) {
     if ($other) {
         [Console]::Error.WriteLine("agy-sub: chỉ chạy agy.exe; thấy '$($other.Source)' (.cmd/.bat/.ps1 sẽ để cmd.exe đọc lại prompt). Thêm thư mục chứa agy.exe vào PATH.")
     } else {
-        [Console]::Error.WriteLine("agy-sub: không thấy agy.exe trong PATH")
+        [Console]::Error.WriteLine("agy-sub: không thấy agy.exe trong PATH. Cài: agy-setup\scripts\setup.ps1 fix")
     }
     exit 2
 }

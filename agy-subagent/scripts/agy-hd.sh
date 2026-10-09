@@ -45,6 +45,11 @@
 #
 # Chọn session herdr bằng HERDR_SESSION (mặc định: session "default" đang chạy). Phiên Claude Code
 # KHÔNG cần chạy trong herdr. Registry: $AGY_HD_JOBS (mặc định ~/.cache/agy-hd). <job> = id hoặc tiền tố.
+# Nạp lớp tương thích (macOS/BSD/busybox, bash >= 4.4): tìm thư mục thật của script qua symlink mà không cần readlink -f
+_s=$0; while [[ -L $_s ]]; do _d=$(cd -P "$(dirname "$_s")" && pwd); _s=$(readlink "$_s"); [[ $_s == /* ]] || _s=$_d/$_s; done
+_HERE=$(cd -P "$(dirname "$_s")" && pwd)
+for _c in "$_HERE/compat.sh" "$_HERE/../../agy-subagent/scripts/compat.sh"; do [[ -f $_c ]] && { source "$_c"; break; }; done
+declare -F agy_require >/dev/null && agy_require jq herdr agy   # thiếu thì tự sửa (setup.sh fix -y)
 set -uo pipefail
 MODEL="gemini-3.8-flash-high"
 JOBS="${AGY_HD_JOBS:-$HOME/.cache/agy-hd}"
@@ -62,7 +67,7 @@ need() {
     || die "herdr server không chạy (session ${HERDR_SESSION:-default}). Mở herdr, hoặc dùng -S <tên> để agy-hd tự dựng session riêng"
 }
 meta()    { sed -n "s/^$2=//p" "$1/meta.env" 2>/dev/null | head -1; }
-setmeta() { sed -i "/^$2=/d" "$1/meta.env"; printf '%s=%s\n' "$2" "$3" >>"$1/meta.env"; }
+setmeta() { sedi "/^$2=/d" "$1/meta.env"; printf '%s=%s\n' "$2" "$3" >>"$1/meta.env"; }
 resolve() {
   local m; m=$(ls -1dt "$JOBS/$1"* 2>/dev/null | head -1)
   [[ -n $m ]] || m=$(ls -1dt "$JOBS"/*"$1"* 2>/dev/null | head -1)
@@ -122,9 +127,9 @@ hcli() { if [[ -n ${HERDR_SESSION:-} && $HERDR_SESSION != default ]]; then echo 
 # job a-code-5801). Job còn BẬN khi tiến trình agy của nó còn một tiến trình con không phải MCP server (các MCP
 # server sống suốt phiên agy, không phải việc đang làm).
 agy_pids() { local d p; d=$(meta "$1" WORKTREE); [[ -n $d ]] || d=$(meta "$1" WORKDIR); d=${d%/}; [[ -n $d ]] || return 0
-  for p in $(pgrep -x agy); do [[ $(readlink "/proc/$p/cwd" 2>/dev/null) == "$d" ]] && echo "$p"; done; }
+  for p in $(pgrep -x agy); do [[ $(proc_cwd "$p") == "$d" ]] && echo "$p"; done; }
 busy() { local p c; subagent_busy "$(basename "$1")" && return 0; for p in $(agy_pids "$1"); do for c in $(pgrep -P "$p"); do
-  tr '\0' ' ' <"/proc/$c/cmdline" 2>/dev/null | grep -qi mcp || return 0; done; done; return 1; }
+  [[ $(proc_args "$c" | tr 'A-Z' 'a-z') == *mcp* ]] || return 0; done; done; return 1; }
 ensure_session() {  # tạo (nếu chưa có) session herdr riêng, headless, sống sau khi lệnh kết thúc
   local n=$1 i; [[ -z $n || $n == default ]] && return 0
   [[ $n =~ ^[A-Za-z0-9_-]{1,40}$ ]] || die "tên session chỉ gồm chữ/số/_/-: $n"
@@ -293,7 +298,7 @@ cmd_start() {
   if [[ $sess == default ]]; then unset HERDR_SESSION; echo "WARN: chạy trong session 'default' của bạn (do chỉ định -S default)" >&2
   else export HERDR_SESSION=$sess; ensure_session "$sess"; fi; need
 
-  local avail swp; avail=$(awk '/MemAvailable/{printf "%d",$2/1024}' /proc/meminfo); swp=$(free -m | awk '/Swap/{ if ($2>0) printf "%d",$3*100/$2; else print 0}')
+  local avail swp; avail=$(mem_avail_mb); swp=$(swap_used_pct)
   if (( avail < 1500 )) && [[ -z ${AGY_HD_FORCE:-} ]]; then die "RAM trống chỉ ${avail} MB (mỗi agy ~300 MB): đóng bớt agent/job rồi chạy lại, hoặc AGY_HD_FORCE=1"; fi
   (( swp > 85 )) && echo "WARN: swap đang ${swp}% đầy, RAM trống ${avail} MB; mỗi agy thêm ~300 MB. Cân nhắc -P (tự nhả RAM sau khi xong) và giảm -j." >&2
   local prof="" pemail=""
@@ -402,7 +407,7 @@ cmd_prompt() {
 cmd_status() {
   local jd id st t; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need; st=$(astate "$id")
   echo "JOB=$id  STATE=$st  AGE=$(ago "$(meta "$jd" STARTED)")  WORKSPACE=$(meta "$jd" WORKSPACE)  BRANCH=$(meta "$jd" BRANCH)"
-  if [[ $st == working ]]; then t=$(tpath "$jd"); if [[ -n $t ]]; then local i=$(( $(date +%s) - $(stat -c %Y "$t") ))
+  if [[ $st == working ]]; then t=$(tpath "$jd"); if [[ -n $t ]]; then local i=$(( $(date +%s) - $(file_mtime "$t") ))
     echo "IDLE=${i}s$([[ $i -gt $STALL ]] && echo "  ⚠ STALL: transcript không đổi > ${STALL}s (xem logs, cân nhắc interrupt)")"; fi; fi
   [[ $st == blocked ]] && echo "⚠ BLOCKED: agy đang hỏi/chờ duyệt. Xem: agy-hd logs $id ; attach: $(hcli) agent attach $id"
   [[ $st == gone ]] && echo "agent đã thoát (interrupt/crash). Mở lại: agy-hd resume $id"
@@ -577,7 +582,7 @@ cmd_tick() {
     # agy đã thoát VÀ pane không còn: tab đã bị đóng (tay, hoặc trước khi close_ui biết đánh dấu CLOSED).
     # Một job đã park thì pane còn, nên vẫn được xét (DONE hoặc STOPPED).
     if [[ $st == gone ]] && ! herdr pane get "$(meta "$jd" PANE)" 2>/dev/null | grep -q '"result"'; then setmeta "$jd" CLOSED 1; continue; fi
-    age=-; steps=0; [[ -n $t && -f $t ]] && { age=$(( now - $(stat -c %Y "$t") )); steps=$(wc -l <"$t"); }
+    age=-; steps=0; [[ -n $t && -f $t ]] && { age=$(( now - $(file_mtime "$t") )); steps=$(wc -l <"$t"); }
     (( age != - && age < 0 )) 2>/dev/null && age=0
     bc=$(watch_cmd "$jd"); cage=${bc%% *}; cmd=${bc#* }; [[ -z $bc ]] && { cage=0; cmd=""; }
     if [[ $st != gone ]] && quota_hit "$id"; then v=QUOTA
@@ -608,7 +613,7 @@ cmd_tick() {
         [[ $(meta "$jd" QUOTA_GAVE_UP) == 1 ]] || { setmeta "$jd" QUOTA_GAVE_UP 1; echo "$(date '+%F %T') $id QUOTA: đã restart 5 lần, dừng tự restart (báo người dùng)" >>"$JOBS/events.log"; }
       fi
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$v" "$(date -d "@$(meta "$jd" TICK_SINCE)" +%H:%M:%S)" "$steps" "$age" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$v" "$(fmt_hms "$(meta "$jd" TICK_SINCE)")" "$steps" "$age" \
       "$(rs=$(meta "$jd" RESTARTS); echo "${rs:-0}")" "$(meta "$jd" WORKSPACE)" "${cmd:0:50}" "$(meta "$jd" PROFILE)" >>"$tmp"
   done
   mv "$tmp" "$JOBS/STATUS.tsv"; printf '%s\n' "$(date '+%F %T')" >"$JOBS/STATUS.updated"
@@ -761,8 +766,8 @@ cmd_fan() {
 watch_cmd() {  # $1=jd -> "<giây đã chạy> <lệnh>" của lệnh (không phải MCP server) mà agy đang chạy, rỗng nếu không có
   local p c cl
   for p in $(agy_pids "$1"); do for c in $(pgrep -P "$p"); do
-    cl=$(tr '\0\n\t' '   ' <"/proc/$c/cmdline" 2>/dev/null); [[ ${cl,,} == *mcp* ]] && continue   # một dòng, kể cả python -c nhiều dòng
-    echo "$(ps -o etimes= -p "$c" 2>/dev/null | tr -d ' ') ${cl:0:70}"; return 0
+    cl=$(proc_args "$c"); [[ ${cl,,} == *mcp* ]] && continue   # một dòng, kể cả python -c nhiều dòng
+    echo "$(proc_age_s "$c") ${cl:0:70}"; return 0
   done; done
 }
 watch_fin() { local t; t=$(tpath "$1"); [[ -n $t ]] && jq -rs 'last|(.source=="MODEL" and .type=="PLANNER_RESPONSE" and ((.content//"")!=""))' "$t" 2>/dev/null | grep -q true; }
@@ -778,7 +783,7 @@ cmd_watch() {
     worst=0
     for jd in "${!left[@]}"; do
       id=$(basename "$jd"); use_session "$jd"; st=$(astate "$id"); t=$(tpath "$jd")
-      age=-; steps=0; [[ -n $t ]] && { age=$(( $(date +%s) - $(stat -c %Y "$t") )); steps=$(wc -l <"$t"); }
+      age=-; steps=0; [[ -n $t ]] && { age=$(( $(date +%s) - $(file_mtime "$t") )); steps=$(wc -l <"$t"); }
       bc=$(watch_cmd "$jd"); cage=${bc%% *}; cmd=${bc#* }; [[ -z $bc ]] && { cage=0; cmd=""; }
       v=ok
       if [[ $st != gone ]] && quota_hit "$id"; then st=quota; fi

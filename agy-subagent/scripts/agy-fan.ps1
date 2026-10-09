@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Chạy NHIỀU agy song song trên Windows. Mỗi task = 1 file prompt trong thư mục tasks/.

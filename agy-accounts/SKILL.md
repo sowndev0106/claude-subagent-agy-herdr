@@ -30,7 +30,8 @@ rồi đăng file fragment bằng Artifact (cùng đường dẫn để giữ UR
 - **agy-switch**: đổi account (mặc định, terminal, một job agy-hd, tự động theo quota).
 
 Lệnh đủ bộ (`agy-p help` để xem): `help add code ls usage dash default switch use whoami best pick env email rename
-relogin rm doctor top export import remote completion`. Chỉ chạy trên Linux (GNU coreutils, bash >= 4.4, python3). agy-hd thêm `-u`, `switch`, `accounts`.
+relogin rm doctor top export import remote completion`. Chạy trên Linux, macOS, WSL (lớp tương thích `compat.sh`;
+cài/sửa môi trường: skill agy-setup). Windows thuần: dùng trong WSL. agy-hd thêm `-u`, `switch`, `accounts`.
 Có vấn đề thì chạy `agy-p doctor` trước.
 
 ## Đăng nhập account mới (workflow)
@@ -65,6 +66,7 @@ Hết quota giữa chừng: tick của agy-hd chuyển job sang account khác v�
   đang chạy trên `~/.gemini`: phiên cũ refresh token và **ghi đè lại account cũ** (đo 2026-10-08: đổi lúc 16:00, bị ghi lại 16:09).
 - Không chép token từ Cockpit/keyring sang profile khi người dùng muốn login thật; mặc định đi luồng `agy-p add`.
 - `agy-p rm` chỉ xoá token/settings/log của profile; hội thoại ở kho chung vẫn còn.
+- Lỗi môi trường (thiếu công cụ, OS khác) → skill agy-setup (`agy-setup fix -y`); lỗi profile → `agy-p doctor --fix`.
 - Tab/workspace herdr cho agy luôn ở session `cas` (dùng agy-hd), không mở trong session của người dùng.
 
 ## Test lại sau khi sửa script (gọi agy thật, chạy trong session cas)

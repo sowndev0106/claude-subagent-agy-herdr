@@ -22,7 +22,8 @@
 #   agy-p best [agy args...]   chạy agy bằng account còn nhiều quota nhất lúc này
 #   agy-p rename <cũ> <mới>    đổi tên profile (cập nhật cả mặc định và job agy-hd đang trỏ tới nó)
 #   agy-p relogin <tên>        đăng nhập lại vào profile đó (token hỏng/bị thu hồi); thất bại thì trả token cũ
-#   agy-p doctor               kiểm tra: agy, cờ ẩn --gemini_dir, shim, từng profile, quota đọc được, agy-hd, timer
+#   agy-p doctor [--fix]       kiểm tra: agy, cờ ẩn --gemini_dir, shim, từng profile, quota đọc được, agy-hd, lịch tick;
+#                              --fix: tự sửa trước (quyền token, symlink, cờ setup, đăng nhập dở, mặc định hỏng, setup.sh fix -y)
 #   agy-p top [-i giây]        xem quota trực tiếp trong terminal, tự làm mới (Ctrl+C để thoát)
 #   agy-p export <tên> [file]  đóng gói đăng nhập của profile (CHỨA TOKEN) ra file hoặc stdout
 #   agy-p import <file|-> [tên]  nhận gói đăng nhập (vd từ máy khác); trùng account thì từ chối
@@ -39,10 +40,15 @@
 # annotations), nên một hội thoại resume được bằng bất kỳ profile nào (--conversation <id>).
 # agy được gọi lồng bên trong (lệnh shell `agy ...`) cũng chạy bằng profile đó, nhờ shim trong scripts/shim.
 # Chỉ Linux (GNU find/stat/sed, bash >= 4.4, python3).
+# Nạp lớp tương thích (macOS/BSD/busybox, bash >= 4.4): tìm thư mục thật của script qua symlink mà không cần readlink -f
+_s=$0; while [[ -L $_s ]]; do _d=$(cd -P "$(dirname "$_s")" && pwd); _s=$(readlink "$_s"); [[ $_s == /* ]] || _s=$_d/$_s; done
+_HERE=$(cd -P "$(dirname "$_s")" && pwd)
+for _c in "$_HERE/compat.sh" "$_HERE/../../agy-subagent/scripts/compat.sh"; do [[ -f $_c ]] && { source "$_c"; break; }; done
 set -euo pipefail
 ROOT=${AGY_PROFILES_DIR:-$HOME/.agy-profiles}
 MAIN=$HOME/.gemini
-HERE=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+HERE=$_HERE
+agy_require python3
 SHIM=$HERE/shim
 SHARED=(conversations brain implicit annotations)
 CACHE=$ROOT/.usage.tsv
@@ -56,7 +62,7 @@ dir()   { if [[ $1 == main ]]; then echo "$MAIN"; else echo "$ROOT/$1"; fi; }
 token() { echo "$(dir "$1")/antigravity-cli/antigravity-oauth-token"; }
 profiles() {  # main trước, rồi các profile khác theo tên
   echo main
-  [[ -d $ROOT ]] && find "$ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' | sort
+  local d; for d in "$ROOT"/*/; do [[ -d $d ]] && { d=${d%/}; echo "${d##*/}"; }; done | sort
   return 0
 }
 email() {  # email trong id_token của profile, rỗng nếu chưa đăng nhập
@@ -154,7 +160,7 @@ cmd_add() {  # đăng nhập ẩn: in link, nhận mã (gõ vào, hoặc `agy-p 
     e=$(email "$want"); [[ -z $e ]] || die "profile '$want' đã đăng nhập ($e)"
     p=$want id=$want
   else                     # tên lấy theo email sau khi đăng nhập
-    id=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n'); p=.login-$id
+    id=$(printf '%04x' "$RANDOM"); p=.login-$id
   fi
   prepare "$p"
   local d fifo res rc=0; d=$(dir "$p"); fifo=$d/.login-code; res=$ROOT/.result-$id
@@ -261,7 +267,7 @@ EOF
 }
 usage_tsv() {  # $1=max-age giây (0 = luôn lấy mới); in TSV của mọi profile
   local age=$1 tmp
-  if (( age > 0 )) && [[ -f $CACHE ]] && (( $(date +%s) - $(stat -c %Y "$CACHE") < age )); then cat "$CACHE"; return 0; fi
+  if (( age > 0 )) && [[ -f $CACHE ]] && (( $(date +%s) - $(file_mtime "$CACHE") < age )); then cat "$CACHE"; return 0; fi
   tmp=$(mktemp -d); mapfile -t _ps < <(profiles)
   fetch_usage "$tmp" "${_ps[@]}"
   mkdir -p "$ROOT"; cp "$tmp/usage.tsv" "$CACHE.$$" && mv "$CACHE.$$" "$CACHE"
@@ -374,7 +380,14 @@ EOF
   (( open )) && { xdg-open "$out" >/dev/null 2>&1 & disown 2>/dev/null; } || true
 }
 
-keyring_email() {  # account mà `agy` trần dùng ở terminal không có biến SSH (gnome-keyring)
+keyring_email() {  # account mà `agy` trần dùng ở terminal không có biến SSH (gnome-keyring / Apple Keychain)
+  if [[ $AGY_OS == Darwin ]]; then
+    security find-generic-password -s gemini -a antigravity -w 2>/dev/null | python3 -c '
+import json, base64, sys
+p = json.loads(sys.stdin.read())["id_token"].split(".")[1]
+print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))["email"])' 2>/dev/null || echo "? (không đọc được Keychain)"
+    return 0
+  fi
   python3 -c '
 import json, base64, secretstorage
 it = next(secretstorage.get_default_collection(secretstorage.dbus_init()).search_items({"service": "gemini", "username": "antigravity"}))
@@ -384,7 +397,7 @@ print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))["email"])' 2
 in_use() {  # có tiến trình agy nào đang chạy bằng profile $1 không
   local p d; d=$(dir "$1")
   # không dùng `tr | grep -q`: với pipefail, grep thoát sớm làm tr dính SIGPIPE và cả pipeline báo sai
-  for p in $(pgrep -x agy); do grep -qxF -- "--gemini_dir=$d" < <(tr '\0' '\n' <"/proc/$p/cmdline" 2>/dev/null) && return 0; done; return 1
+  for p in $(pgrep -x agy); do proc_has_arg "$p" "--gemini_dir=$d" && return 0; done; return 1
 }
 
 hd_loads() {  # "--load <profile>=<n>" cho từng profile có job agy-hd đang mở (chưa DONE/STOPPED/đóng)
@@ -393,6 +406,14 @@ hd_loads() {  # "--load <profile>=<n>" cho từng profile có job agy-hd đang m
     grep -q '^CLOSED=1' "$m" && continue; grep -qE '^TICK_STATE=(DONE|STOPPED)$' "$m" && continue
     p=$(sed -n 's/^PROFILE=//p' "$m" | tail -1); [[ -n $p ]] && echo "$p"
   done | sort | uniq -c | while read -r n p; do printf -- '--load\n%s=%s\n' "$p" "$n"; done
+}
+
+sched_ok() {  # lịch chạy `agy-hd tick` mỗi phút: systemd (Linux), launchd (macOS) hoặc cron
+  case $AGY_OS in
+    Linux)  systemctl --user is-active agy-hd-tick.timer >/dev/null 2>&1 || crontab -l 2>/dev/null | grep -q 'agy-hd tick' ;;
+    Darwin) launchctl list 2>/dev/null | grep -q 'dev.agy.hd-tick' || crontab -l 2>/dev/null | grep -q 'agy-hd tick' ;;
+    *)      crontab -l 2>/dev/null | grep -q 'agy-hd tick' ;;
+  esac
 }
 
 cmd_whoami() {
@@ -437,7 +458,7 @@ cmd_rename() {
   [[ -f $ROOT/.default && $(<"$ROOT/.default") == "$a" ]] && printf '%s\n' "$b" >"$ROOT/.default"
   for m in "${AGY_HD_JOBS:-$HOME/.cache/agy-hd}"/*/meta.env "${AGY_JOBS:-$HOME/.cache/agy-jobs}"/*/meta.env; do
     # so khớp chính xác (tên có thể chứa '.', không để regex khớp nhầm profile khác)
-    [[ -f $m ]] && grep -qxF "PROFILE=$a" "$m" && sed -i "s/^PROFILE=${a//./\\.}\$/PROFILE=$b/" "$m"
+    [[ -f $m ]] && grep -qxF "PROFILE=$a" "$m" && sedi "s/^PROFILE=${a//./\\.}\$/PROFILE=$b/" "$m"
   done
   rm -f "$CACHE"; echo "Đã đổi tên profile '$a' → '$b'"
 }
@@ -456,7 +477,24 @@ cmd_relogin() {
   fi
 }
 
+doctor_fix() {  # tự sửa những gì sửa được rồi mới kiểm (doctor --fix)
+  local p t d
+  echo "tự sửa"
+  for p in $(profiles); do
+    t=$(token "$p"); [[ -f $t ]] || continue
+    [[ $(file_mode "$t") == 600 ]] || { chmod 600 "$t" && echo "  ✓ $p: quyền token → 600"; }
+    [[ $p == main ]] && continue
+    prepare "$p" && echo "  ✓ $p: liên kết config + hội thoại dùng chung, cờ đã setup"
+  done
+  purge_logins; find "$ROOT" -maxdepth 1 -name '.result-*' -delete 2>/dev/null
+  for d in "$ROOT"/.login-*; do [[ -d $d ]] && ! pgrep -f -- "--gemini-dir $d" >/dev/null 2>&1 && rm -rf -- "$d" && echo "  ✓ bỏ phiên đăng nhập dở ${d##*/}"; done
+  if [[ -f $ROOT/.default ]]; then d=$(<"$ROOT/.default"); [[ -n $(email "$d" 2>/dev/null) ]] || { rm -f "$ROOT/.default"; echo "  ✓ bỏ mặc định trỏ tới '$d' (không còn/chưa đăng nhập)"; }; fi
+  [[ -f $CACHE ]] && ! awk -F'\t' 'NF < 6 { exit 1 }' "$CACHE" && { rm -f "$CACHE"; echo "  ✓ bỏ cache quota hỏng"; }
+  if [[ -f $AGY_SETUP ]]; then echo "  công cụ, skill, lệnh, lịch tick: setup.sh fix -y"; AGY_REPAIRING=1 bash "$AGY_SETUP" fix -y 2>&1 | sed -n '/^== sửa/,/^== kiểm lại/p' | sed '1d;$d' | sed 's/^/  /'; fi
+}
+
 cmd_doctor() {
+  [[ ${1:-} == --fix ]] && doctor_fix
   local bad=0 warn=0 p e t T v
   ok()   { echo "  ✓ $*"; }
   no()   { echo "  ✗ $*"; bad=$((bad+1)); }
@@ -474,7 +512,7 @@ cmd_doctor() {
   for p in $(profiles); do
     e=$(email "$p"); t=$(token "$p")
     if [[ -z $e ]]; then hmm "$p: chưa đăng nhập (agy-p relogin $p, hoặc agy-p rm $p)"; continue; fi
-    [[ $(stat -c %a "$t") == 600 ]] || hmm "$p: quyền file token là $(stat -c %a "$t"), nên là 600"
+    [[ $(file_mode "$t") == 600 ]] || hmm "$p: quyền file token là $(file_mode "$t"), nên là 600"
     if [[ $p != main ]]; then
       [[ -L $(dir "$p")/config ]] || hmm "$p: config/ không phải symlink tới ~/.gemini/config"
       grep -qs AGENT_ONBOARDING_STATE_COMPLETED "$(dir "$p")/antigravity-cli/jetski_state.pbtxt" || hmm "$p: thiếu cờ đã setup (chạy agy-p $p một lần để chép)"
@@ -495,10 +533,10 @@ cmd_doctor() {
   local hd; hd=$(command -v agy-hd 2>/dev/null) || true
   if [[ -z $hd ]]; then hmm "không có agy-hd trong PATH (skill agy-subagent)"
   else grep -q 'agy-p' "$(readlink -f "$hd")" && ok "agy-hd biết dùng agy-p (-u, tự chọn, đổi account khi hết quota)" || no "agy-hd chưa tích hợp agy-p"
-    systemctl --user is-active agy-hd-tick.timer >/dev/null 2>&1 && ok "timer agy-hd-tick đang chạy (kiểm job mỗi phút)" || hmm "timer agy-hd-tick không chạy: systemctl --user enable --now agy-hd-tick.timer"
+    sched_ok && ok "lịch chạy agy-hd tick đang bật (kiểm job mỗi phút)" || hmm "lịch chạy agy-hd tick chưa bật: $AGY_SETUP fix"
     herdr session list 2>/dev/null | awk '$1=="cas" && $2=="running"{f=1} END{exit !f}' && ok "herdr session cas đang chạy" || hmm "herdr session cas chưa chạy (agy-hd init)"
   fi
-  echo "---"; echo "$bad lỗi, $warn cảnh báo"; (( bad == 0 ))
+  echo "---"; echo "$bad lỗi, $warn cảnh báo"; (( bad == 0 )) || echo "Tự sửa: agy-p doctor --fix"; (( bad == 0 ))
 }
 
 cmd_top() {
@@ -637,7 +675,7 @@ case ${1:-} in
   best)    shift; cmd_best "$@" ;;
   rename)  shift; cmd_rename "$@" ;;
   relogin) shift; cmd_relogin "$@" ;;
-  doctor)  shift; cmd_doctor ;;
+  doctor)  shift; cmd_doctor "$@" ;;
   top)     shift; cmd_top "$@" ;;
   export)  shift; cmd_export "$@" ;;
   import)  shift; cmd_import "$@" ;;

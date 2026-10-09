@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Điều khiển các job agy trên Windows: xem trạng thái, interrupt, đọc history/summary, quản lý worktree.
@@ -383,12 +383,12 @@ switch ($Command.ToLower()) {
         foreach ($jp in $targets) {
             $name = Split-Path $jp -Leaf
             if (-not (Test-Alive $jp)) {
-                Write-Output "$name: không chạy"
+                Write-Output "${name}: không chạy"
                 continue
             }
             Stop-JobProcess $jp
             $cid = Get-CidOf $jp
-            Write-Output "$name: đã interrupt (resume được bằng agy-sub -r $cid)"
+            Write-Output "${name}: đã interrupt (resume được bằng agy-sub -r $cid)"
         }
     }
 

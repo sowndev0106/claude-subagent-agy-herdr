@@ -15,6 +15,11 @@
 #   agy-ctl.sh wt-drop <job>           bỏ worktree + branch (không merge)
 #
 # <job> là id đầy đủ hoặc tiền tố/tên; khớp nhiều thì lấy job mới nhất.
+# Nạp lớp tương thích (macOS/BSD/busybox, bash >= 4.4): tìm thư mục thật của script qua symlink mà không cần readlink -f
+_s=$0; while [[ -L $_s ]]; do _d=$(cd -P "$(dirname "$_s")" && pwd); _s=$(readlink "$_s"); [[ $_s == /* ]] || _s=$_d/$_s; done
+_HERE=$(cd -P "$(dirname "$_s")" && pwd)
+for _c in "$_HERE/compat.sh" "$_HERE/../../agy-subagent/scripts/compat.sh"; do [[ -f $_c ]] && { source "$_c"; break; }; done
+declare -F agy_require >/dev/null && agy_require jq   # thiếu thì tự sửa (setup.sh fix -y)
 set -uo pipefail
 JOBS="${AGY_JOBS:-$HOME/.cache/agy-jobs}"
 BRAIN="$HOME/.gemini/antigravity-cli/brain"
@@ -35,7 +40,7 @@ jstate() {
   else echo DEAD; fi   # tiến trình chết mà không ghi state (máy tắt, kill -9)
 }
 age() { local s; s=$(( $(date +%s) - $(meta "$1" STARTED) )); printf '%dm%02ds' $((s/60)) $((s%60)); }
-idle() { local m; m=$(stat -c %Y "$1/events.jsonl" 2>/dev/null) || m=$(meta "$1" STARTED); echo $(( $(date +%s) - m )); }
+idle() { local m; m=$(file_mtime "$1/events.jsonl" 2>/dev/null) || m=$(meta "$1" STARTED); echo $(( $(date +%s) - m )); }
 STALL=${AGY_STALL_SEC:-180}
 cid_of() { jq -r 'select(.event=="init").conversation_id' "$1/events.jsonl" 2>/dev/null | head -1; }
 killtree() {

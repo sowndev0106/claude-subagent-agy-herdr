@@ -25,6 +25,7 @@ A toolkit and agent skills suite enabling **Claude Code** to orchestrate **Antig
 | **`agy-parallel`** | Fan-out 2–4 independent tasks concurrently across isolated tabs and worktrees. | `agy-hd fan`, `agy-fan` |
 | **`agy-review`** | Solicit an independent read-only second opinion on diffs/code, validated against a JSON schema (`schema.json`). | `agy-sub -R -s schema.json` |
 | **`claude-task-id`** | Allocate and maintain a 3-digit task identifier (`#132 ...`) shared across Claude Code and herdr workspaces. | `agy-id claim`, `agy-id show` |
+| **`agy-setup`** | Check, install and self-repair the suite on Linux / macOS / WSL / Windows (packages, herdr, agy, links, tick scheduler). | `agy-setup check`, `agy-setup fix -y`, `setup.ps1` |
 | **`agy-accounts`** | Run agy on several Google accounts (one profile each): hidden login, per-account quota, default account, auto-pick and quota failover for jobs. | `agy-p add`, `agy-p usage`, `agy-p default`, `agy-hd start -u` |
 | **`agy-login`** | Log an account in without the agy UI (this machine or a remote one over ssh), re-login, move accounts between machines. | `agy-p add`, `agy-p remote <host> add`, `agy-p relogin`, `agy-p export/import` |
 | **`agy-quota`** | Quota left per account (Gemini/Claude, weekly and 5-hour): HTML dashboard, live terminal view, table. | `agy-p dash`, `agy-p top`, `agy-p usage`, `agy-p whoami` |
@@ -123,8 +124,8 @@ or `agy-p export <profile> file.tgz` / `agy-p import file.tgz` (the file contain
 
 ## 🚀 Installation
 
-Requirements: Linux (GNU coreutils, bash ≥ 4.4), `agy`, `herdr`, `git`, `jq`, `python3`. The headless runners also ship as
-PowerShell scripts for Windows; `agy-hd` and `agy-p` are Linux-only.
+Supported: **Linux** (Ubuntu/Debian, Fedora/RHEL, Arch, openSUSE, Alpine), **macOS** (Intel, Apple silicon), **WSL**, and
+**Windows** (PowerShell; `agy-hd`/`agy-p` run inside WSL, the headless runners `agy-sub`/`agy-ctl`/`agy-fan`/`agy-id` run natively).
 
 ### 1. Clone repository
 ```bash
@@ -132,12 +133,38 @@ git clone git@github.com:sowndev0106/claude-subagent-agy-herdr.git
 cd claude-subagent-agy-herdr
 ```
 
-### 2. Run the installer
-The installer script links skills to `~/.claude/skills/`, places executable binaries into `~/.local/bin/`, and sets up the systemd user timer:
+### 2. Run the setup (check, install, self-repair)
 
+**Linux / macOS / WSL** (works with plain `sh` too, even where bash is missing):
 ```bash
-./install.sh
+./agy-setup/scripts/setup.sh check     # report only
+./agy-setup/scripts/setup.sh fix -y    # install what is missing   (./install.sh does the same)
 ```
+`fix` installs system packages with your package manager (apt / dnf / yum / pacman / zypper / apk / Homebrew; bash ≥ 4.4, git,
+jq, python3, perl, curl, procps...), **herdr** and **agy** with their official installers, links the skills into
+`~/.claude/skills` and the commands into `~/.local/bin` (including `agy-setup`), schedules `agy-hd tick` every minute
+(systemd user timer on Linux, launchd on macOS, cron otherwise) and puts `~/.local/bin` on your `PATH`.
+System packages are installed only as root or with passwordless sudo; otherwise the exact command is printed.
+
+**Windows**:
+```powershell
+powershell -ExecutionPolicy Bypass -File agy-setup\scripts\setup.ps1 fix -Yes
+```
+Installs agy and herdr (official installers), git / jq / python (winget), links the skills (junctions) and puts the script
+folders on the user `PATH`. With WSL present it also runs `setup.sh fix -y` inside WSL for the full suite.
+
+### Self-repair
+
+* Every script loads `agy-subagent/scripts/compat.sh`: on bash < 4.4 it re-runs itself with a newer bash (Homebrew), and GNU-only
+  tools are replaced by portable functions (`/proc`, `stat -c`, `sed -i`, `date -d`, `ps etimes`, `readlink -f`...) or emulated
+  when missing (`flock`, `timeout`, `setsid`, `tac`, `md5sum`, `sha256sum`, `column`).
+* A missing dependency (jq, herdr, agy...) triggers `setup.sh fix -y` automatically, at most once per hour
+  (log: `~/.cache/agy-setup/repair.log`; disable with `AGY_AUTO_REPAIR=0`).
+* `agy-p doctor --fix` repairs accounts: token permissions, profile symlinks, onboarding flags, abandoned logins, broken default.
+* The `agy-setup` skill tells Claude to run `agy-setup check` / `fix -y` and retry whenever an agy command fails with an
+  environment error, and to patch `compat.sh` (with tests) for a new OS.
+* Tests: `agy-setup/tests/compat-test.sh` (run it also with `AGY_COMPAT_FORCE=1` to exercise the macOS/busybox paths),
+  `agy-setup/tests/distro-test.sh` (Debian, Fedora, Alpine, Arch in Docker), `pwsh -File agy-setup/tests/ps-parse.ps1`.
 
 ### 3. Grant permissions in Claude Code
 Add the required bash tool executions to `permissions.allow` in `~/.claude/settings.json`:
@@ -205,12 +232,13 @@ agy-sub -R -d /path/to/repo -s "$(cat ~/.claude/skills/agy-review/schema.json)" 
 ```
 claude-subagent-agy-herdr/
 ├── README.md                  # Documentation and architecture guide
-├── install.sh                 # Automatic symlinker and systemd service setup
+├── install.sh                 # Wrapper: agy-setup/scripts/setup.sh fix
 ├── .gitignore
 ├── agy-subagent/              # Core subagent skill
 │   ├── SKILL.md
 │   ├── REFERENCE.md
 │   ├── scripts/
+│   │   ├── compat.sh          # Portability layer (macOS/BSD/busybox) + auto-repair
 │   │   ├── agy-hd.sh          # Primary runner via herdr multiplexer (TUI)
 │   │   ├── agy-sub.sh         # Headless single-job runner
 │   │   ├── agy-fan.sh         # Headless parallel runner
@@ -233,6 +261,7 @@ claude-subagent-agy-herdr/
 ├── agy-login/                 # Skill: log in (local / remote), re-login, move accounts
 ├── agy-quota/                 # Skill: quota dashboard and views
 ├── agy-switch/                # Skill: switch default / terminal / job account
+├── agy-setup/                 # Setup + self-repair: setup.sh (Linux/macOS/WSL), setup.ps1 (Windows), tests
 └── agy-accounts/              # Multiple Google accounts for agy (agy-p and its docs)
     ├── SKILL.md
     └── scripts/

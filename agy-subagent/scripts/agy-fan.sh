@@ -11,8 +11,13 @@
 #
 # Chạy bằng Bash run_in_background:true -> Claude Code được báo khi xong, không cần poll.
 # exit 0 = mọi task SUCCESS; 1 = có task lỗi (xem SUMMARY.tsv).
+# Nạp lớp tương thích (macOS/BSD/busybox, bash >= 4.4): tìm thư mục thật của script qua symlink mà không cần readlink -f
+_s=$0; while [[ -L $_s ]]; do _d=$(cd -P "$(dirname "$_s")" && pwd); _s=$(readlink "$_s"); [[ $_s == /* ]] || _s=$_d/$_s; done
+_HERE=$(cd -P "$(dirname "$_s")" && pwd)
+for _c in "$_HERE/compat.sh" "$_HERE/../../agy-subagent/scripts/compat.sh"; do [[ -f $_c ]] && { source "$_c"; break; }; done
+declare -F agy_require >/dev/null && agy_require jq   # thiếu thì tự sửa (setup.sh fix -y)
 set -uo pipefail
-here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+here=$_HERE
 tasks="" res="" jobs=3 wd="$PWD" tmo=900 ro=() wtf=0 cf=0 acct=""
 while getopts "i:o:j:d:t:u:RWC" o; do
   case $o in i) tasks=$OPTARG;; o) res=$OPTARG;; j) jobs=$OPTARG;; d) wd=$OPTARG;;

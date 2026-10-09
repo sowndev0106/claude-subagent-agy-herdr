@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     agy-id: cấp số 3 chữ số + tên cho phiên Claude Code trên Windows.

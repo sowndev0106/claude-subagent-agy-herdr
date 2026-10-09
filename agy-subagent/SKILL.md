@@ -120,6 +120,12 @@ Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab l
   - worktree vẫn còn (`wt-diff`). `close` commit những thay đổi còn dở trong worktree trước khi đóng.
 - **Lưới an toàn:** `tick` (systemd timer, mỗi phút) tự đóng tab của job đã DONE quá `AGY_AUTOCLOSE_MIN` phút (mặc định 15; đặt 0 để tắt), và ghi vào `events.log`. Đừng dựa vào nó: đóng tab ngay sau khi kiểm chứng.
 
+## Cài đặt, hệ điều hành, tự sửa (skill `agy-setup`)
+
+- Các script nạp `scripts/compat.sh`: chạy được trên Linux, macOS, WSL (bash < 4.4 thì tự chạy lại bằng bash Homebrew;
+  thiếu flock/timeout/setsid/... thì giả lập). Thiếu công cụ (jq, herdr, agy...) thì tự chạy `setup.sh fix -y` một lần.
+- Lệnh agy-* lỗi môi trường: làm theo skill agy-setup (`agy-setup check` → `agy-setup fix -y` → chạy lại).
+
 ## Nhiều account (skill `agy-accounts`)
 
 - Mỗi job chạy bằng một **profile agy-p** (một Google account, token riêng). `agy-hd start/fan -u <profile>` để chỉ định;

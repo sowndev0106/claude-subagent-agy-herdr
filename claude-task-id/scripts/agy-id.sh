@@ -11,6 +11,10 @@
 #   agy-id list                      mọi số đã cấp: số, tên, phiên, tuổi
 #   agy-id release                   trả số của phiên này
 # Dữ liệu: $AGY_ID_DIR (mặc định ~/.cache/agy-ids).
+# Nạp lớp tương thích (macOS/BSD/busybox, bash >= 4.4): tìm thư mục thật của script qua symlink mà không cần readlink -f
+_s=$0; while [[ -L $_s ]]; do _d=$(cd -P "$(dirname "$_s")" && pwd); _s=$(readlink "$_s"); [[ $_s == /* ]] || _s=$_d/$_s; done
+_HERE=$(cd -P "$(dirname "$_s")" && pwd)
+for _c in "$_HERE/compat.sh" "$_HERE/../../agy-subagent/scripts/compat.sh"; do [[ -f $_c ]] && { source "$_c"; break; }; done
 set -uo pipefail
 DIR="${AGY_ID_DIR:-$HOME/.cache/agy-ids}"; MAP="$DIR/map.tsv"; CNT="$DIR/counter"; DAYS="${AGY_ID_ACTIVE_DAYS:-14}"
 mkdir -p "$DIR"; touch "$MAP"
