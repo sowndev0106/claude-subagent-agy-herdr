@@ -41,7 +41,7 @@ Cách dùng:
   agy-ctl gc [days=3] [-y]        dọn job xong cũ hơn N ngày + worktree không có thay đổi
   agy-ctl wt-list                 worktree agy/* đang tồn tại
   agy-ctl wt-diff <job>           diff đầy đủ branch agy/<id> so với nơi tách ra
-  agy-ctl wt-merge <job>          merge agy/<id> vào repo rồi dọn (job -C: áp diff vào cây làm việc)
+  agy-ctl wt-merge <job> -m "type(scope): ..." [-m thân] | --no-commit   gộp SQUASH thành một commit mang tên người dùng rồi dọn (job -C: áp diff vào cây làm việc)
   agy-ctl wt-drop <job>           bỏ worktree + branch (không merge)
 "@
 }
@@ -462,10 +462,38 @@ switch ($Command.ToLower()) {
             }
             Write-Output "đã áp thay đổi của agy vào cây làm việc (chưa commit)"
         } else {
-            git -C $repo merge --no-ff -m "Merge $branch (agy subagent)" $branch
+            # Một commit, tên người dùng, message rõ ràng (không merge --no-ff kéo commit "agy(...)" + "Merge agy/..." vào branch chung)
+            $margs = @(); $noCommit = $false
+            for ($i = 1; $i -lt $ArgsList.Count; $i++) {
+                if ($ArgsList[$i] -eq "-m" -and $i + 1 -lt $ArgsList.Count) { $margs += @("-m", $ArgsList[$i + 1]); $i++ }
+                elseif ($ArgsList[$i] -eq "--no-commit") { $noCommit = $true }
+                else { [Console]::Error.WriteLine("tham số lạ: $($ArgsList[$i])"); exit 2 }
+            }
+            if (-not $noCommit -and $margs.Count -eq 0) {
+                [Console]::Error.WriteLine('wt-merge cần message commit rõ ràng: agy-ctl wt-merge <job> -m "type(scope): việc đã làm" (hoặc --no-commit)')
+                exit 2
+            }
+            if (-not (git -C $repo config user.name) -or -not (git -C $repo config user.email)) {
+                [Console]::Error.WriteLine("repo $repo chưa cấu hình git user.name/user.email")
+                exit 2
+            }
+            git -C $repo diff --cached --quiet
             if ($LASTEXITCODE -ne 0) {
-                [Console]::Error.WriteLine("CONFLICT: giải quyết tay trong $repo rồi commit, hoặc git merge --abort")
+                [Console]::Error.WriteLine("repo $repo đang có thay đổi đã stage: commit hoặc unstage trước")
+                exit 2
+            }
+            git -C $repo merge --squash $branch | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                [Console]::Error.WriteLine("CONFLICT: giải quyết tay trong $repo rồi tự git commit, hoặc git reset --merge")
                 exit 1
+            }
+            git -C $repo diff --cached --quiet
+            if ($LASTEXITCODE -eq 0) { Write-Output "agy không có thay đổi để gộp" }
+            elseif ($noCommit) { Write-Output "đã gộp vào index (chưa commit)" }
+            else {
+                git -C $repo commit -q @margs
+                if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("commit thất bại"); exit 1 }
+                Write-Output ("đã commit: " + (git -C $repo log -1 --format='%h %an: %s'))
             }
         }
 

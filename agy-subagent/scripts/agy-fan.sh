@@ -3,7 +3,7 @@
 #
 # Usage: agy-fan.sh -i tasks_dir -o results_dir [-j 3] [-d workdir] [-t 900] [-R] [-W [-C]]
 #   -C  (với -W) mang thay đổi chưa commit của repo vào mỗi worktree
-#   -W  mỗi task chạy trong git worktree riêng (branch agy/<id>); gộp sau bằng agy-ctl.sh wt-merge
+#   -W  mỗi task chạy trong git worktree riêng (branch agy/<id>); gộp sau bằng agy-ctl.sh wt-merge <job> -m "type(scope): ..."
 #   tasks_dir/*.md   mỗi file là prompt của 1 subagent (tên file = id task)
 #   results_dir/<id>.out    response text
 #   results_dir/<id>.json   JSON đầy đủ (conversation_id để resume)

@@ -220,16 +220,28 @@ Script tự nối ràng buộc cứng (không push/commit/reset, không mạng 1
 
 ## Worktree (`-W`)
 
-Worktree ở `<repo>/../.agy-wt/<repo>-<id>`, branch `agy/<id>`; wrapper (không phải agy) commit kết quả.
+Worktree ở `<repo>/../.agy-wt/<repo>-<id>`, branch `agy/<id>`; wrapper (không phải agy) commit kết quả lên `agy/<id>`.
+Các commit đó chỉ là nháp nội bộ, không bao giờ được vào branch chung.
 
 ```bash
 agy-hd wt-diff <job>      # xem diff trước khi nhận
-agy-hd wt-merge <job>     # merge vào branch hiện tại (job -C: áp diff vào cây làm việc, không commit) + đóng workspace + dọn
+agy-hd wt-merge <job> -m "feat(indexer): accept client interaction events over HTTP" [-m "thân: vì sao, gồm gì"]
+                          # gộp SQUASH thành MỘT commit mang tên người dùng (git config của repo) + đóng workspace + dọn
+                          # (job -C: áp diff vào cây làm việc, không commit)
+agy-hd wt-merge <job> --no-commit   # gộp vào index, Claude tự commit (vd. gộp nhiều job thành một commit)
 agy-hd wt-drop <job>      # bỏ, không merge
 ```
 
+**Commit phải mang tên người dùng và có message rõ ràng** (người dùng dặn 2026-10-15, sau khi MR ai-hub !192, gateway !92,
+console !72 phải viết lại lịch sử để bỏ 13 commit `agy: a-…` + 11 merge `Merge agy/… (agy subagent)`):
+- `wt-merge` thiếu `-m` (và không có `--no-commit`) thì bị từ chối; message bắt đầu bằng `agy`/`Merge agy`/`wip` cũng bị từ chối.
+- Viết message theo conventional commit bằng tiếng Anh, mô tả thay đổi thật (đọc `wt-diff` trước), không nhắc agy/job id.
+- Không bao giờ `git merge agy/<id>`, cherry-pick hay push nhánh `agy/<id>`: chỉ gộp qua `wt-merge`.
+- Trước khi push, kiểm: `git log --format='%an %ae %s' origin/<base>..HEAD | grep -i agy` phải rỗng.
+
 Worktree tách từ **HEAD**: thay đổi chưa commit KHÔNG vào worktree trừ khi dùng `-C`. Conflict khi
-merge: script dừng và báo, Claude Code giải tay. Dọn job cũ: `agy-hd gc [ngày=3] [-y]`.
+merge: script dừng và báo, Claude Code giải tay rồi tự `git commit -m "type(scope): ..."` (hoặc `git reset --merge` để bỏ).
+Index đang có thay đổi đã stage thì `wt-merge` từ chối, để commit gộp chỉ chứa việc của agy. Dọn job cũ: `agy-hd gc [ngày=3] [-y]`.
 
 Song song nhiều task: [agy-parallel](../agy-parallel/SKILL.md).
 

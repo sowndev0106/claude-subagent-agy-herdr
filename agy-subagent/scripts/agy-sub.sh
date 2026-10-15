@@ -86,7 +86,7 @@ if [[ $wt -eq 1 ]]; then
       git -C "$repo" diff --binary HEAD | git -C "$wtdir" apply --whitespace=nowarn - || { echo "agy-sub: carry diff thất bại" >&2; exit 2; }
       git -C "$repo" ls-files -z -o --exclude-standard | while IFS= read -r -d '' f; do mkdir -p "$wtdir/$(dirname "$f")"; cp -a "$repo/$f" "$wtdir/$f"; done
       git -C "$wtdir" add -A
-      git -C "$wtdir" -c user.name=agy -c user.email=agy@local commit -q -m "carry: thay đổi chưa commit của repo trước job $id" && base=$(git -C "$wtdir" rev-parse HEAD)
+      git -C "$wtdir" $(git -C "$wtdir" config user.name >/dev/null || echo "-c user.name=agy -c user.email=agy@local") commit -q -m "wip: carry uncommitted changes into job $id" && base=$(git -C "$wtdir" rev-parse HEAD)
     else
       echo "WARN: repo có thay đổi chưa commit, worktree KHÔNG thấy chúng (chỉ thấy HEAD). Dùng -C để mang theo." >&2
     fi
@@ -162,7 +162,7 @@ diffstat=""
 if [[ -n $wtdir ]]; then
   if [[ -n $(git -C "$wtdir" status --porcelain) ]]; then
     git -C "$wtdir" add -A
-    git -C "$wtdir" -c user.name=agy -c user.email=agy@local commit -q -m "agy($name): $id" || true
+    git -C "$wtdir" $(git -C "$wtdir" config user.name >/dev/null || echo "-c user.name=agy -c user.email=agy@local") commit -q -m "wip: agy job $id ($name)" || true
   fi
   diffstat=$(git -C "$repo" diff --stat "$base" "$branch" 2>/dev/null | tail -20)
 fi

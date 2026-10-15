@@ -42,7 +42,10 @@
 #                            STATUS.tsv + events.log, tự restart job hết hạn mức. systemd timer agy-hd-tick chạy mỗi phút
 #   agy-hd close <job>       đóng workspace (kill mọi thứ trong đó)
 #   agy-hd list              các job + trạng thái
-#   agy-hd wt-diff|wt-merge|wt-drop <job>   quản lý worktree của job -W
+#   agy-hd wt-diff|wt-drop <job>   quản lý worktree của job -W
+#   agy-hd wt-merge <job> -m "type(scope): việc đã làm" [-m "thân"] | --no-commit
+#                            gộp SQUASH thành MỘT commit mang tên người dùng (git config của repo), không commit
+#                            "agy: ..." và không commit "Merge agy/..."; thiếu -m thì từ chối
 #   agy-hd gc [ngày=3] [-y]  đóng workspace + xóa job cũ đã xong, không có thay đổi chưa merge
 #   agy-hd fan -i tasks_dir -o results_dir [-j 3] [-d dir] [-u profile] [-W [-C]] [-R] [-t giây]   nhiều task song song (<=4)
 #
@@ -240,10 +243,13 @@ access() {
   [[ -n $(meta "$jd" BRANCH) ]] && echo "  worktree   : $(meta "$jd" WORKTREE)  (branch $(meta "$jd" BRANCH))"
   echo "  prompt gốc : $jd/prompt.md"
 }
+# Commit nội bộ trên nhánh agy/<id> mang tên người dùng của repo (chỉ dùng tên agy khi repo chưa cấu hình user).
+# Các commit này không bao giờ vào branch chung: wt-merge gộp squash thành một commit có message rõ ràng.
+git_id() { git -C "$1" config user.name >/dev/null 2>&1 && git -C "$1" config user.email >/dev/null 2>&1 || echo "-c user.name=agy -c user.email=agy@local"; }
 finalize() {  # worktree: wrapper (không phải agy) commit những gì agy đã sửa
   local jd=$1 w; w=$(meta "$jd" WORKTREE); [[ -n $w && -d $w ]] || return 0
   if [[ -n $(git -C "$w" status --porcelain) ]]; then
-    git -C "$w" add -A; git -C "$w" -c user.name=agy -c user.email=agy@local commit -q -m "agy: $(basename "$jd")" || true
+    git -C "$w" add -A; git -C "$w" $(git_id "$w") commit -q -m "wip: agy job $(basename "$jd")" || true
   fi
 }
 screen() { herdr agent read "$1" --source "${2:-recent-unwrapped}" --lines "${3:-40}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; }
@@ -356,7 +362,7 @@ cmd_start() {
         git -C "$repo" diff --binary HEAD | git -C "$wtdir" apply --whitespace=nowarn - || die "carry diff thất bại"
         git -C "$repo" ls-files -z -o --exclude-standard | while IFS= read -r -d '' f; do mkdir -p "$wtdir/$(dirname "$f")"; cp -a "$repo/$f" "$wtdir/$f"; done
         git -C "$wtdir" add -A
-        git -C "$wtdir" -c user.name=agy -c user.email=agy@local commit -q -m "carry: thay đổi chưa commit trước job $id" && base=$(git -C "$wtdir" rev-parse HEAD)
+        git -C "$wtdir" $(git_id "$wtdir") commit -q -m "wip: carry uncommitted changes into job $id" && base=$(git -C "$wtdir" rev-parse HEAD)
       else echo "WARN: repo có thay đổi chưa commit, worktree KHÔNG thấy chúng. Dùng -C để mang theo." >&2; fi
     fi
   fi
@@ -761,8 +767,9 @@ cmd_list() {
   done
 }
 cmd_wt() {
-  local sub=$1 jd r b w base; jd=$(resolve "${2:?job}"); r=$(meta "$jd" REPO); b=$(meta "$jd" BRANCH); w=$(meta "$jd" WORKTREE); base=$(meta "$jd" BASE)
+  local sub=$1 jd r b w base nocommit=0 margs=(); jd=$(resolve "${2:?job}"); r=$(meta "$jd" REPO); b=$(meta "$jd" BRANCH); w=$(meta "$jd" WORKTREE); base=$(meta "$jd" BASE)
   [[ -n $b ]] || die "job này không chạy với -W"; use_session "$jd"
+  shift 2; while (( $# )); do case $1 in -m) margs+=(-m "${2:?-m cần message}"); shift 2;; --no-commit) nocommit=1; shift;; *) die "tham số lạ: $1";; esac; done
   case $sub in
   wt-diff) finalize "$jd"; git -C "$r" diff "$base" "$b" ;;
   wt-merge)
@@ -771,7 +778,19 @@ cmd_wt() {
       git -C "$r" diff --binary "$base" "$b" | git -C "$r" apply --3way --whitespace=nowarn - \
         || { echo "CONFLICT khi áp diff vào cây làm việc của $r. Worktree giữ nguyên: $w"; exit 1; }
       echo "đã áp thay đổi của agy vào cây làm việc (chưa commit)"
-    else git -C "$r" merge --no-ff -m "Merge $b (agy subagent)" "$b" || { echo "CONFLICT: giải quyết tay trong $r rồi commit, hoặc git merge --abort"; exit 1; }; fi
+    else
+      # Một commit duy nhất, mang tên người dùng, message rõ ràng do người gọi viết. Không merge --no-ff (sẽ kéo các
+      # commit nội bộ của agy/<id> và một commit "Merge agy/..." vào branch chung). Sự cố 2026-10-15: MR ai-hub !192,
+      # gateway !92, console !72 phải viết lại lịch sử để bỏ 13 commit "agy: ..." + 11 merge "Merge agy/...".
+      (( nocommit )) || (( ${#margs[@]} )) || die 'wt-merge cần message commit rõ ràng: agy-hd wt-merge <job> -m "type(scope): việc đã làm" [-m "thân"]  (hoặc --no-commit rồi tự commit)'
+      (( nocommit )) || ! grep -qiE '^(agy|merge agy|wip)\b' <<<"${margs[1]}" || die "message phải mô tả thay đổi, không phải \"${margs[1]}\""
+      [[ -n $(git_id "$r") ]] && die "repo $r chưa cấu hình git user.name/user.email: commit phải mang tên người dùng"
+      git -C "$r" diff --cached --quiet || die "repo $r đang có thay đổi đã stage: commit hoặc unstage trước, để commit gộp chỉ chứa việc của agy"
+      git -C "$r" merge --squash "$b" >/dev/null || { echo "CONFLICT: giải quyết tay trong $r rồi tự git commit -m \"type(scope): ...\", hoặc git reset --merge"; exit 1; }
+      if git -C "$r" diff --cached --quiet; then echo "agy không có thay đổi để gộp"
+      elif (( nocommit )); then echo "đã gộp thay đổi của agy vào index (chưa commit): tự git commit -m \"type(scope): ...\""
+      else git -C "$r" commit -q "${margs[@]}" && echo "đã commit: $(git -C "$r" log -1 --format='%h %an: %s')"; fi
+    fi
     close_ui "$jd"
     git -C "$r" worktree remove --force "$w" && git -C "$r" branch -D "$b" >/dev/null && echo "đã dọn $b + đóng tab" ;;
   wt-drop)

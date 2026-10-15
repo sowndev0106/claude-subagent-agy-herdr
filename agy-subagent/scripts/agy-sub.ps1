@@ -209,7 +209,8 @@ if ($Worktree) {
             }
 
             git -C $wtdir add -A 2>$null
-            git -C $wtdir -c user.name=agy -c user.email=agy@local commit -q -m "carry: thay đổi chưa commit của repo trước job $id" 2>$null
+            $idArgs = if (git -C $wtdir config user.name) { @() } else { @("-c", "user.name=agy", "-c", "user.email=agy@local") }
+            git -C $wtdir @idArgs commit -q -m "wip: carry uncommitted changes into job $id" 2>$null
             if ($LASTEXITCODE -eq 0) {
                 $base = (git -C $wtdir rev-parse HEAD 2>$null).Trim()
             }
@@ -442,7 +443,8 @@ if ($wtdir) {
     $dirty = git -C $wtdir status --porcelain 2>$null
     if ($dirty) {
         git -C $wtdir add -A 2>$null
-        git -C $wtdir -c user.name=agy -c user.email=agy@local commit -q -m "agy($cleanName): $id" 2>$null | Out-Null
+        $idArgs = if (git -C $wtdir config user.name) { @() } else { @("-c", "user.name=agy", "-c", "user.email=agy@local") }
+        git -C $wtdir @idArgs commit -q -m "wip: agy job $id ($cleanName)" 2>$null | Out-Null
     }
     $diffLines = git -C $repo diff --stat $base $branch 2>$null
     if ($diffLines) {

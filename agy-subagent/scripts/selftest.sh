@@ -56,9 +56,9 @@ if run conflict; then echo "== merge conflict"
   mkrepo
   $SUB -W -n conf -d "$T/repo" -p "Sửa a.py: add phải cộng (a+b). Chỉ sửa a.py." >/dev/null 2>&1
   ( cd "$T/repo" && printf 'def add(a, b):\n    return b + a\n' > a.py && $G commit -qam "main sửa khác" )
-  out=$($CTL wt-merge conf 2>&1); rc=$?
+  out=$($CTL wt-merge conf -m "fix(a): add sums both operands" 2>&1); rc=$?
   check "exit 1 + báo CONFLICT" "[[ $rc -eq 1 ]] && grep -q CONFLICT <<<\"\$out\""
-  git -C "$T/repo" merge --abort 2>/dev/null
+  git -C "$T/repo" reset -q --merge 2>/dev/null
   check "wt-drop dọn được"      "$CTL wt-drop conf >/dev/null 2>&1; ! git -C '$T/repo' branch | grep -q agy/"
 fi
 
@@ -88,7 +88,7 @@ if run fan; then echo "== fan 5 task, -j 4 (xếp hàng), -W"
   $FAN -i "$T/tasks" -o "$T/res" -j 4 -d "$T/repo" -W >/dev/null 2>&1
   check "5 dòng SUMMARY"      "[[ \$(wc -l <'$T/res/SUMMARY.tsv') -eq 5 ]]"
   check "cả 5 SUCCESS"        "[[ \$(grep -c SUCCESS '$T/res/SUMMARY.tsv') -eq 5 ]]"
-  for i in 1 2 3 4 5; do $CTL wt-merge "t$i" >/dev/null 2>&1; done
+  for i in 1 2 3 4 5; do $CTL wt-merge "t$i" -m "test: add f$i.txt" >/dev/null 2>&1; done
   check "5 file đã merge"     "[[ \$(cat '$T'/repo/f?.txt 2>/dev/null | tr -d '\n') == 12345 ]]"
 fi
 

@@ -11,7 +11,7 @@
 #   agy-ctl.sh gc [days=3] [-y]        dọn job xong cũ hơn N ngày + worktree không có thay đổi (mặc định chỉ liệt kê)
 #   agy-ctl.sh wt-list                 worktree agy/* đang tồn tại
 #   agy-ctl.sh wt-diff <job>           diff đầy đủ branch agy/<id> so với nơi tách ra
-#   agy-ctl.sh wt-merge <job>          merge agy/<id> vào repo rồi dọn (job -C: áp diff vào cây làm việc, không commit)
+#   agy-ctl.sh wt-merge <job> -m "type(scope): ..." [-m thân] | --no-commit   gộp SQUASH thành một commit mang tên người dùng rồi dọn (job -C: áp diff vào cây làm việc, không commit)
 #   agy-ctl.sh wt-drop <job>           bỏ worktree + branch (không merge)
 #
 # <job> là id đầy đủ hoặc tiền tố/tên; khớp nhiều thì lấy job mới nhất.
@@ -112,6 +112,7 @@ wt-merge)
   d=$(resolve "${1:?job}"); r=$(meta "$d" REPO); b=$(meta "$d" BRANCH); w=$(meta "$d" WORKTREE); base=$(meta "$d" BASE)
   [[ -n $b ]] || die "job này không chạy với -W"
   [[ $(jstate "$d") == RUNNING ]] && die "job còn đang chạy"
+  shift; nocommit=0; margs=(); while (( $# )); do case $1 in -m) margs+=(-m "${2:?-m cần message}"); shift 2;; --no-commit) nocommit=1; shift;; *) die "tham số lạ: $1";; esac; done
   if [[ $(meta "$d" CARRY) == 1 ]]; then
     # Job -C: nhánh chứa commit "carry" (thay đổi chưa commit của repo), merge sẽ đè lên cây bẩn.
     # Chỉ áp phần agy làm thêm (BASE..branch) vào cây làm việc, để nguyên dạng chưa commit.
@@ -119,7 +120,14 @@ wt-merge)
       || { echo "CONFLICT khi áp diff vào cây làm việc của $r (xem git status, file *.rej / marker). Worktree giữ nguyên: $w"; exit 1; }
     echo "đã áp thay đổi của agy vào cây làm việc (chưa commit)"
   else
-    git -C "$r" merge --no-ff -m "Merge $b (agy subagent)" "$b" || { echo "CONFLICT: giải quyết tay trong $r rồi commit, hoặc git merge --abort"; exit 1; }
+    # Một commit, tên người dùng, message rõ ràng (không merge --no-ff kéo commit "agy(...)" + "Merge agy/..." vào branch chung)
+    (( nocommit )) || (( ${#margs[@]} )) || die 'wt-merge cần message commit rõ ràng: wt-merge <job> -m "type(scope): việc đã làm" (hoặc --no-commit)'
+    git -C "$r" config user.name >/dev/null && git -C "$r" config user.email >/dev/null || die "repo $r chưa cấu hình git user.name/user.email"
+    git -C "$r" diff --cached --quiet || die "repo $r đang có thay đổi đã stage: commit hoặc unstage trước"
+    git -C "$r" merge --squash "$b" >/dev/null || { echo "CONFLICT: giải quyết tay trong $r rồi tự git commit, hoặc git reset --merge"; exit 1; }
+    if git -C "$r" diff --cached --quiet; then echo "agy không có thay đổi để gộp"
+    elif (( nocommit )); then echo "đã gộp vào index (chưa commit)"
+    else git -C "$r" commit -q "${margs[@]}" && echo "đã commit: $(git -C "$r" log -1 --format='%h %an: %s')"; fi
   fi
   git -C "$r" worktree remove --force "$w" && git -C "$r" branch -D "$b" >/dev/null && echo "đã dọn $b" ;;
 wt-drop)

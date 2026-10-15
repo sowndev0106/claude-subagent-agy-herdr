@@ -62,9 +62,9 @@ if run conflict; then echo "== merge conflict (không -C)"
   mkrepo
   $HD start -n conf -W -d "$T/repo" -t 150 -p "Sửa a.py: add phải cộng (a+b). Chỉ sửa a.py." >/dev/null 2>&1
   ( cd "$T/repo" && printf 'def add(a, b):\n    return b + a\n' > a.py && $G commit -qam "main sửa khác" )
-  out=$($HD wt-merge conf 2>&1); rc=$?
+  out=$($HD wt-merge conf -m "fix(a): add sums both operands" 2>&1); rc=$?
   check "exit 1 + CONFLICT"          "[[ $rc -eq 1 ]] && grep -q CONFLICT <<<\"\$out\""
-  git -C "$T/repo" merge --abort 2>/dev/null
+  git -C "$T/repo" reset -q --merge 2>/dev/null
   check "wt-drop dọn"                "$HD wt-drop conf >/dev/null 2>&1; ! git -C '$T/repo' branch | grep -q agy/"
 fi
 
@@ -92,8 +92,10 @@ if run fan; then echo "== fan 3 task -j 2 -W, ACCESS.txt sớm"
   check "3 dòng SUMMARY, đều DONE"   "[[ \$(wc -l <'$T/res/SUMMARY.tsv') -eq 3 && \$(grep -c DONE '$T/res/SUMMARY.tsv') -eq 3 ]]"
   check "mỗi subagent 1 tab (không chia màn hình)" "ws=\$(herdr workspace list | jq -r '.result.workspaces[0].workspace_id'); tc=\$(herdr tab list --workspace \$ws | jq '.result.tabs|length'); pc=\$(herdr workspace get \$ws | jq '.result.workspace.pane_count'); [[ \$tc -ge 3 && \$tc -eq \$pc ]]"
   check "3 tab riêng, cùng 1 workspace" "[[ \$(cut -f4 '$T/res/SUMMARY.tsv' | sort -u | wc -l) -eq 3 && \$(cut -f4 '$T/res/SUMMARY.tsv' | cut -d: -f1 | sort -u | wc -l) -eq 1 ]]"
-  for i in 1 2 3; do $HD wt-merge "t$i" >/dev/null 2>&1; done
+  check "wt-merge thiếu -m bị từ chối" "! $HD wt-merge t1 >/dev/null 2>&1"
+  for i in 1 2 3; do $HD wt-merge "t$i" -m "test: add f$i.txt" >/dev/null 2>&1; done
   check "3 file đã merge"            "[[ \$(cat '$T'/repo/f?.txt 2>/dev/null | tr -d '\n') == 123 ]]"
+  check "3 commit thường, không merge, không tên agy" "[[ \$(git -C '$T/repo' rev-list --merges --count HEAD) -eq 0 ]] && ! git -C '$T/repo' log --format='%an %ae %s' | grep -qi agy"
 fi
 
 if run gc; then echo "== gc"
