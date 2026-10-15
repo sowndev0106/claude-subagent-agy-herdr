@@ -27,7 +27,8 @@ Claude 5 giờ (%, `-1` = không đọc được, `-2` = không có gói), rồi
 - Có hai giới hạn: **tuần** và **5 giờ**. Job agy chỉ chạy được khi cả hai còn. agy-hd dùng min(tuần, 5 giờ) của Gemini.
 - Cockpit Tools chỉ hiện giới hạn 5 giờ, nên có thể ghi 100% trong khi giới hạn tuần chỉ còn 39%.
 - Nhiều profile cùng email là **một** account, dùng chung quota. Dashboard gộp chúng vào một thẻ.
-- Dưới 5% Gemini: agy-hd không tự chọn account đó (`AGY_MIN_QUOTA`).
+- Dưới 10% Gemini (`AGY_MIN_QUOTA`): agy-hd không chọn account đó khi còn account khác đạt ngưỡng, và chuyển job đang ở
+  đó sang account khác ở lần prompt/resume kế tiếp.
 - Báo giờ hồi theo giờ máy; dashboard tự đếm ngược.
 
 ## Khi báo cho người dùng

@@ -148,6 +148,11 @@ Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab l
 - Mỗi job chạy bằng một **profile agy-p** (một Google account, token riêng). `agy-hd start/fan -u <profile>` để chỉ định;
   không có `-u` thì `agy-p pick` tự chọn: ưu tiên profile mặc định (`agy-p default`) khi nó còn ≥ 20% quota Gemini và
   đang chạy < 2 job, không thì account còn nhiều quota nhất chia cho số job đang mở trên nó (fan được chia đều).
+- **Account dưới 10% quota Gemini** (`AGY_MIN_QUOTA`, min của tuần và 5 giờ) không được dùng khi còn account khác đạt ngưỡng:
+  - job mới không chọn nó; chỉ khi mọi account đều dưới 10% mới tạm dùng account còn nhiều nhất (`agy-p pick` báo ở stderr);
+  - job đang ở account đó được chuyển sang account khác, cùng conversation, ở lúc an toàn: `agy-hd prompt` khi agy đang rảnh
+    (chuyển trước rồi mới gửi prompt) và `agy-hd resume` (kể cả restart của tick). Lượt đang chạy thì không bị cắt: để nó chạy
+    tiếp, hết hẳn thì tick restart sang account khác như mục dưới. `agy-hd switch <job> <profile>` chỉ định tay thì giữ đúng profile đó.
 - Dòng `ACCOUNT=<profile> (<email>)` khi start, dòng `account :` trong ACCESS, cột `account` trong `STATUS.tsv` / `agy-hd list`.
 - Hội thoại dùng chung mọi profile, nên **resume / restart sang account khác giữ nguyên conversation**.
   Subagent dùng sẵn của agy (`invoke_subagent`) và lệnh `agy` lồng trong job đều chạy cùng account đó.
@@ -168,7 +173,7 @@ Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab l
 - **tick tự làm việc này** cho job ở trạng thái QUOTA: tối đa `AGY_QUOTA_MAX` (5) lần liên tiếp, cách nhau ít nhất 3 phút (1 phút nếu job chạy qua agy-p; `AGY_QUOTA_GAP` ghi đè), mỗi lần ghi vào `events.log` (mọi dòng mang id job).
   Job chạy lại được `AGY_QUOTA_RESET_SEC` (600 s) mà không dính quota nữa thì bộ đếm về 0, nên job sống 24 giờ gặp quota 5 giờ nhiều lần vẫn được cứu mỗi lần.
   Job chạy qua agy-p thì restart **chuyển sang account khác còn quota** (loại account vừa hết, `QUOTA_EMAILS` trong meta ghi account đó; account khác chỉ bị
-  loại khi quota lấy mới dưới 5%, nên account đã hồi quota được chọn lại), rồi
+  loại khi quota lấy mới dưới 10%, nên account đã hồi quota được chọn lại; mọi account khác đều dưới 10% thì lấy account còn nhiều nhất), rồi
   resume đúng conversation; không còn account nào thì ghi `QUOTA_NO_ACCOUNT` rồi mở lại trên account cũ. Đã e2e 2026-10-08: account hết quota 5 giờ (0%) → account khác, cùng conversation, xong việc. Sau `AGY_QUOTA_MAX` lần vẫn hết hạn mức thì tick ghi `QUOTA_GAVE_UP` (và `notify` in ra). Lúc đó **báo người dùng**, kèm thời gian "Resets in" trên màn hình, đừng restart vòng vòng.
 - Việc có file đầu ra ghi dần (ví dụ labels.jsonl) nên được thiết kế để làm tiếp được: ghi theo lô, có script kiểm tra. Sau khi job DONE, kiểm lại số dòng hoặc chạy script kiểm tra.
 
@@ -199,6 +204,10 @@ Script tự nối ràng buộc cứng (không push/commit/reset, không mạng 1
 | Chỉ các job agy-hd | `agy-hd list` |
 
 - `BLOCKED` nghĩa là agy đang hỏi/chờ duyệt: đừng trả lời thay, báo người dùng kèm lệnh attach.
+  Ngoại lệ agy-hd tự xử lý: lúc mở agy (resume/switch/restart sang account khác) agy có thể hiện thông báo
+  ("Changes to third-party model access … esc to dismiss"). herdr ghi "blocked during startup" và giữ `blocked` +
+  `launch_pending` dù agy đã về dấu nhắc, nên từ chối prompt. Khi gửi prompt bị từ chối như vậy, agy-hd bấm esc
+  (chỉ khi herdr báo blocked và agy đang ở dấu nhắc hoặc thông báo đang hiện, không bấm ở hộp thoại trust) rồi gửi lại.
 - **agy có thể chạy lệnh nền rồi kết thúc lượt** ("launched ... as a background task and am waiting"), sau đó tự
   chạy tiếp khi lệnh xong. Lúc đó herdr báo idle. `agy-hd` coi job còn **bận** khi tiến trình agy còn một tiến
   trình con không phải MCP server: chưa báo DONE, và `park` từ chối. Câu trả lời cuối kiểu "đang chờ kết quả"

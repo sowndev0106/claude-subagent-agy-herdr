@@ -10,9 +10,11 @@
 #   agy-p usage [--tsv [--max-age giây]] [tên...]   quota còn lại (chạy /usage song song; --tsv cho script, dùng cache)
 #   agy-p dash [--max-age giây] [--no-open]   trang HTML trực quan: quota từng account, account mặc định, account job mới sẽ dùng
 #   agy-p default [tên]        xem / đổi profile mặc định (dùng khi không chỉ định profile; agy-hd ưu tiên nó)
-#   agy-p pick [--load tên=n]... [--exclude tên]... [--exclude-email email]... [--min %]
+#   agy-p pick [--load tên=n]... [--exclude tên]... [--exclude-email email]... [--min %] [--strict]
 #                              in tên profile nên dùng: ưu tiên mặc định, không thì profile còn nhiều quota Gemini nhất
-#                              chia cho số job đang chạy trên nó; mỗi account (email) chỉ tính một lần
+#                              chia cho số job đang chạy trên nó; mỗi account (email) chỉ tính một lần. Account dưới
+#                              AGY_MIN_QUOTA (10)% bị bỏ qua; chỉ khi không còn account nào đạt ngưỡng mới tạm dùng account
+#                              dưới ngưỡng còn nhiều quota nhất (báo ở stderr). --strict: không tạm dùng, thoát 2
 #   agy-p email <tên>          in email của profile (rỗng nếu chưa đăng nhập)
 #   agy-p env <tên>            in lệnh export để một shell (vd pane herdr) chạy `agy` bằng profile đó: eval "$(agy-p env x)"
 #   agy-p rm [-y] <tên>        xoá profile (chỉ token, settings, log; hội thoại dùng chung nên vẫn giữ)
@@ -54,7 +56,7 @@ agy_require python3
 SHIM=$HERE/shim
 SHARED=(conversations brain implicit annotations)
 CACHE=$ROOT/.usage.tsv
-MIN_QUOTA=${AGY_MIN_QUOTA:-5}            # % Gemini còn lại tối thiểu để được chọn
+MIN_QUOTA=${AGY_MIN_QUOTA:-10}           # % Gemini còn lại (min tuần, 5 giờ) tối thiểu để được chọn khi còn account khác
 DEFAULT_MIN=${AGY_DEFAULT_MIN:-20}       # profile mặc định được ưu tiên khi còn >= ngần này %
 DEFAULT_MAXJOBS=${AGY_DEFAULT_MAXJOBS:-2} # ... và đang chạy ít hơn ngần này job
 
@@ -304,15 +306,15 @@ EOF
 }
 
 cmd_pick() {
-  local loads=() exp=() exe=() min=$MIN_QUOTA age=300
+  local loads=() exp=() exe=() min=$MIN_QUOTA age=300 strict=0
   while [[ $# -gt 0 ]]; do case $1 in
     --load) loads+=("$2"); shift;; --exclude) exp+=("$2"); shift;; --exclude-email) exe+=("$2"); shift;;
-    --min) min=$2; shift;; --max-age) age=$2; shift;; *) die "pick: không hiểu '$1'";; esac; shift; done
+    --min) min=$2; shift;; --max-age) age=$2; shift;; --strict) strict=1;; *) die "pick: không hiểu '$1'";; esac; shift; done
   usage_tsv "$age" | python3 -c '
 import sys
-default, mn, dmin, dmax = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+default, mn, dmin, dmax, strict = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5] == "1"
 loads, exp, exe = {}, set(), set()
-for a in sys.argv[5:]:
+for a in sys.argv[6:]:
     k, v = a.split(":", 1)
     if k == "L": n, c = v.split("=", 1); loads[n] = loads.get(n, 0) + int(c)
     elif k == "P": exp.add(v)
@@ -322,20 +324,26 @@ by_email = {}   # mỗi account một ứng viên: ưu tiên profile mặc đị
 for n, e, gw, g5, *_ in rows:
     if e == "-" or n in exp or e in exe: continue
     q = min(int(gw), int(g5))
-    if q < mn: continue
+    if q < 1: continue   # hết hẳn, không đọc được (-1) hoặc không có gói (-2)
     rank = (n != default, n != "main", n)
     cur = by_email.get(e)
     if cur is None or rank < cur["rank"]: by_email[e] = {"name": n, "q": q, "rank": rank, "load": 0}
 for n, e, *_ in rows:
     if e in by_email: by_email[e]["load"] += loads.get(n, 0)
-cands = list(by_email.values())
-if not cands: sys.exit(1)
+score = lambda c: (c["q"] / (1 + c["load"]), c["q"])
+cands = [c for c in by_email.values() if c["q"] >= mn]
+if not cands:   # mọi account còn lại đều dưới ngưỡng: vẫn hơn account đã hết hẳn
+    low = list(by_email.values())
+    if strict or not low: sys.exit(1)
+    c = max(low, key=score)
+    print("agy-p pick: không account nào còn >= %d%% quota Gemini; tạm dùng %s (%d%%)" % (mn, c["name"], c["q"]), file=sys.stderr)
+    print(c["name"]); sys.exit(0)
 d = next((c for c in cands if c["name"] == default), None)
 if d and d["q"] >= dmin and d["load"] < dmax: print(d["name"]); sys.exit(0)
-print(max(cands, key=lambda c: (c["q"] / (1 + c["load"]), c["q"]))["name"])
-' "$(default_profile)" "$min" "$DEFAULT_MIN" "$DEFAULT_MAXJOBS" \
+print(max(cands, key=score)["name"])
+' "$(default_profile)" "$min" "$DEFAULT_MIN" "$DEFAULT_MAXJOBS" "$strict" \
     $(for x in "${loads[@]}"; do echo "L:$x"; done) $(for x in "${exp[@]}"; do echo "P:$x"; done) $(for x in "${exe[@]}"; do echo "E:$x"; done) \
-    || die "không còn profile nào có quota Gemini >= ${min}% (agy-p usage để xem)"
+    || { (( strict )) && die "không còn profile nào có quota Gemini >= ${min}% (agy-p usage để xem)"; die "không còn profile nào còn quota Gemini (agy-p usage để xem)"; }
 }
 
 # dash: trang HTML trực quan (mẫu scripts/dashboard.html), mở bằng trình duyệt. --fragment ghi bản không có
@@ -350,9 +358,9 @@ cmd_dash() {
     grep -q '^CLOSED=1' "$jd" && continue; grep -qE '^TICK_STATE=(DONE|STOPPED)$' "$jd" && continue
     p=$(sed -n 's/^PROFILE=//p' "$jd" | tail -1); [[ -n $p ]] && echo "$p"; done | sort | uniq -c)
   mkdir -p "$(dirname "$out")"
-  python3 - "$HERE/dashboard.html" "$out" "$frag" "$(default_profile)" "$pick" "$tsv" "$jobs" <<'EOF'
+  python3 - "$HERE/dashboard.html" "$out" "$frag" "$(default_profile)" "$pick" "$tsv" "$jobs" "$MIN_QUOTA" <<'EOF'
 import sys, json, datetime
-tpl, out, frag, default, pick, tsv, jobs = sys.argv[1:8]
+tpl, out, frag, default, pick, tsv, jobs, mn = sys.argv[1:9]
 load = {}
 for line in jobs.splitlines():
     c, n = line.split(); load[n] = int(c)
@@ -370,7 +378,7 @@ for line in tsv.splitlines():
             a["limits"][k] = {"pct": int(f[2 + i]) if f[2 + i].lstrip("-").isdigit() else -1, "reset": None if r in ("-", "") else r}
 rank = lambda a: (default not in a["profiles"], "main" not in a["profiles"], a["email"])
 data = {"generated": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-        "default": default, "pick": pick or None, "accounts": sorted(by_email.values(), key=rank), "unlogged": unlogged}
+        "default": default, "pick": pick or None, "min": int(mn), "accounts": sorted(by_email.values(), key=rank), "unlogged": unlogged}
 blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
 t = open(tpl, encoding="utf-8").read()
 a, b = t.index("/*DATA*/"), t.index("/*END*/")
@@ -439,7 +447,7 @@ cmd_use() {  # in lệnh để shell gọi eval; chạy trần thì nhắc cách
 cmd_switch() {
   if [[ ${1:-} == --auto ]]; then
     local p a; mapfile -t a < <(hd_loads)
-    p=$(DEFAULT_MIN=101 cmd_pick --max-age 0 "${a[@]}") || die "không còn account nào có quota Gemini >= ${MIN_QUOTA}%"
+    p=$(DEFAULT_MIN=101 cmd_pick --max-age 0 "${a[@]}") || die "không còn account nào còn quota Gemini"
     cmd_default "$p"
   else cmd_default "$@"; fi
 }
@@ -526,7 +534,7 @@ cmd_doctor() {
   while IFS=$'\t' read -r p e gw g5 _; do
     [[ $e == - ]] && continue
     if [[ $gw == -1 || $g5 == -1 ]]; then no "$p: không đọc được quota (token hỏng/bị thu hồi? agy-p relogin $p)"
-    elif (( gw < MIN_QUOTA || g5 < MIN_QUOTA )); then hmm "$p: Gemini tuần $gw%, 5 giờ $g5% (dưới ${MIN_QUOTA}%, không được tự chọn)"
+    elif (( gw < MIN_QUOTA || g5 < MIN_QUOTA )); then hmm "$p: Gemini tuần $gw%, 5 giờ $g5% (dưới ${MIN_QUOTA}%: chỉ được chọn khi không còn account nào đạt ngưỡng)"
     else ok "$p: Gemini tuần $gw%, 5 giờ $g5%"; fi
   done < <(usage_tsv 0)
   local stale; stale=$(find "$ROOT" -maxdepth 1 \( -name '.result-*' -o -name '.login-*' \) -mmin +20 2>/dev/null | wc -l)
@@ -547,11 +555,11 @@ cmd_top() {
   while :; do
     local tsv; tsv=$(usage_tsv "$every")
     clear
-    python3 - "$(default_profile)" "$every" "$tsv" <<'EOF'
+    python3 - "$(default_profile)" "$every" "$tsv" "$MIN_QUOTA" <<'EOF'
 import sys, datetime
-default, every, tsv = sys.argv[1], sys.argv[2], sys.argv[3]
+default, every, tsv, mn = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 C = {"g": "\033[32m", "y": "\033[33m", "o": "\033[38;5;209m", "r": "\033[31m", "d": "\033[2m", "b": "\033[1m", "0": "\033[0m"}
-def col(p): return C["g"] if p >= 50 else C["y"] if p >= 20 else C["o"] if p >= 5 else C["r"]
+def col(p): return C["g"] if p >= 50 else C["y"] if p >= 20 else C["o"] if p >= mn else C["r"]
 def bar(p, w=24):
     if p < 0: return C["d"] + "·" * w + C["0"] + ("  không có" if p == -2 else "  ?")
     n = round(p * w / 100); return col(p) + "█" * n + C["d"] + "░" * (w - n) + C["0"] + f" {p:3d}%"

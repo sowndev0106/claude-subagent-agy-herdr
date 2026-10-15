@@ -5,6 +5,7 @@
 #   E2E_EXHAUSTED=<profile hết quota>     D4 dùng quota hết thật (tick tự restart); không có thì D4 gọi agy-hd restart như tick
 set -uo pipefail
 S=$(mktemp -d "${TMPDIR:-/tmp}/agy-e2e.XXXXXX"); W=$S/work; mkdir -p "$W"; LOG=$S/e2e.log; : >"$LOG"
+MINQ=${AGY_MIN_QUOTA:-10}   # cùng ngưỡng với agy-p pick
 A=${E2E_ACCOUNT:-$(agy-p pick)}; AE=$(agy-p email "$A"); EXH=${E2E_EXHAUSTED:-}
 [[ -n $AE ]] || { echo "E2E_ACCOUNT '$A' chưa đăng nhập"; exit 2; }
 echo "account chính: $A ($AE); account hết quota: ${EXH:-không có, D4 gọi agy-hd restart}; log: $LOG"
@@ -35,19 +36,19 @@ good=0; accts=""
 for k in 1 2 3 4; do a=$(sed -n 's/^ACCOUNT=\([^ ]*\).*/\1/p' "$F/res/t$k.out" | head -1); accts="$accts $a"
   grep -q "D3 task$k PROFILE=$a" "$F/res/t$k.out" && good=$((good+1)); JOBS+=("$(jobof "$(cat "$F/res/t$k.out")")"); done
 # kỳ vọng: account thứ hai đủ quota (≥ 1/4 account tốt nhất) thì phải chia ≥ 2 account; không thì dồn 1 account là đúng
-read -r best second < <(agy-p usage --tsv --max-age 600 | awk -F'\t' '$2!="-"{q=($3<$4?$3:$4); if(!(($2) in s) || q>s[$2]) s[$2]=q} END{for(e in s) if(s[e]>=5) print s[e]}' | sort -rn | head -2 | tr '\n' ' ')
+read -r best second < <(agy-p usage --tsv --max-age 600 | awk -F'\t' -v m="$MINQ" '$2!="-"{q=($3<$4?$3:$4); if(!(($2) in s) || q>s[$2]) s[$2]=q} END{for(e in s) if(s[e]>=m) print s[e]}' | sort -rn | head -2 | tr '\n' ' ')
 nacc=$(tr ' ' '\n' <<<"$accts" | grep -v '^$' | sort -u | wc -l); want=1; [[ -n ${second:-} ]] && (( second * 4 >= best )) && want=2
 (( good == 4 && nacc >= want )) && ok "D3 fan 4 task: chia cho${accts} (quota tốt nhất ${best}%, kế tiếp $([[ -n ${second:-} ]] && echo "${second}%" || echo không có): cần ≥ $want account); 4/4 tự báo đúng" \
   || bad "D3 ($good/4 đúng; account:$accts; cần ≥ $want account)"
 
 # D4: hết quota → đổi account, cùng conversation.
-#  - E2E_EXHAUSTED đặt và account đó thật sự hết quota (< 5%): job chạy trên nó, tick tự phát hiện và restart.
+#  - E2E_EXHAUSTED đặt và account đó thật sự hết quota (< AGY_MIN_QUOTA, mặc định 10%): job chạy trên nó, tick tự phát hiện và restart.
 #  - Không thì gọi thẳng `agy-hd restart` (đúng hàm tick gọi khi thấy QUOTA) cho một job đang chạy trên $A.
 say D4
 q_of() { agy-p usage --tsv --max-age 0 | awk -F'\t' -v p="$1" '$1==p { print ($3<$4?$3:$4) }'; }
 OTH=$(agy-p pick --exclude-email "$AE" 2>/dev/null) || OTH=""
 P4='Lần đầu: trả lời đúng 1 dòng: D4 START. Khi được bảo làm tiếp: chạy lệnh shell echo $AGY_PROFILE_ACTIVE rồi trả lời đúng 1 dòng: D4 PROFILE=<output>'
-if [[ -n $EXH && $(q_of "$EXH") -lt 5 ]]; then MODE="quota hết thật, tick tự restart"; SRC=$EXH
+if [[ -n $EXH && $(q_of "$EXH") -lt $MINQ ]]; then MODE="quota hết thật, tick tự restart"; SRC=$EXH
 elif [[ -n $OTH ]]; then MODE="agy-hd restart như tick"; SRC=$A
 else MODE=""; fi
 if [[ -z $MODE ]]; then echo "SKIP  D4 (cần một account khác còn quota để chuyển sang)"

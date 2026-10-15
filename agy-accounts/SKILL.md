@@ -57,10 +57,12 @@ Dự phòng khi luồng ẩn hỏng: `agy-p add -i` mở UI agy.
 Dùng bởi agy-hd và agy-sub khi không có `-u`:
 - Ưu tiên profile mặc định nếu còn ≥ `AGY_DEFAULT_MIN` (20)% quota Gemini và đang chạy < `AGY_DEFAULT_MAXJOBS` (2) job.
 - Không thì chọn account có điểm cao nhất: quota Gemini (min của tuần và 5 giờ) / (1 + số job đang mở).
-- Account dưới `AGY_MIN_QUOTA` (5)% bị loại. Nhiều profile cùng email tính là một account.
+- Account dưới `AGY_MIN_QUOTA` (10)% bị loại khi còn account khác đạt ngưỡng. Mọi account đều dưới ngưỡng thì tạm dùng account
+  còn nhiều quota nhất (báo ở stderr); `--strict` thì thoát 2. Account 0% không bao giờ được chọn. Nhiều profile cùng email tính là một account.
 - Quota lấy từ cache `~/.agy-profiles/.usage.tsv` (5 phút). `agy-p usage --tsv --max-age 0` để làm mới.
 
 Hết quota giữa chừng: tick của agy-hd chuyển job sang account khác và resume đúng conversation (skill agy-subagent).
+Job có account tụt dưới 10%: agy-hd chuyển nó trước khi gửi prompt mới hoặc khi resume (không cắt lượt đang chạy).
 
 ## Quy tắc
 

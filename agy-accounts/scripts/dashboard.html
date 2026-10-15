@@ -88,12 +88,12 @@ code { font-family: var(--mono); font-size: 12.5px; background: var(--track); pa
   </section>
   <footer>
     <div>Làm mới: <code>agy-p dash</code> · Xem trong terminal: <code>agy-p usage</code> · Đổi account mặc định: <code>agy-p default &lt;profile&gt;</code></div>
-    <div>Màu: xanh ≥ 50% · vàng 20–49% · cam 5–19% · đỏ dưới 5% (agy-hd không tự chọn account dưới 5% quota Gemini).</div>
+    <div id="legend"></div>
   </footer>
 </div>
 
 <script>
-const DATA = /*DATA*/{"generated":"2026-10-08T09:30:00Z","default":"main","pick":"work","accounts":[{"email":"you@example.com","profiles":["main"],"jobs":0,"limits":{"gemini_week":{"pct":62,"reset":"2026-10-12T06:00:00Z"},"gemini_5h":{"pct":90,"reset":"2026-10-08T12:00:00Z"},"claude_week":{"pct":40,"reset":null},"claude_5h":{"pct":-2,"reset":null}}}],"unlogged":[]}/*END*/;
+const DATA = /*DATA*/{"generated":"2026-10-08T09:30:00Z","default":"main","pick":"work","min":10,"accounts":[{"email":"you@example.com","profiles":["main"],"jobs":0,"limits":{"gemini_week":{"pct":62,"reset":"2026-10-12T06:00:00Z"},"gemini_5h":{"pct":90,"reset":"2026-10-08T12:00:00Z"},"claude_week":{"pct":40,"reset":null},"claude_5h":{"pct":-2,"reset":null}}}],"unlogged":[]}/*END*/;
 
 const WINDOWS = [
   ["Gemini", [["gemini_week", "Tuần"], ["gemini_5h", "5 giờ"]]],
@@ -104,7 +104,7 @@ function status(p) {
   if (p < 0) return ["s-none", "không đọc được"];
   if (p >= 50) return ["s-good", "còn nhiều"];
   if (p >= 20) return ["s-warning", "đang vơi"];
-  if (p >= 5) return ["s-serious", "sắp hết"];
+  if (p >= MIN) return ["s-serious", "sắp hết"];
   return ["s-critical", "hết"];
 }
 function fmtTime(iso) {  // "T5 08/10 18:44", giờ của máy người xem
@@ -121,19 +121,21 @@ function fmtLeft(iso) {
   return "còn " + (d ? d + " ngày " : "") + (d || h ? h + " giờ " : "") + (d ? "" : m + " phút");
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const MIN = DATA.min ?? 10;   // agy-p MIN_QUOTA: dưới ngần này % Gemini thì không được chọn khi còn account khác
 const gem = a => { const w = a.limits.gemini_week.pct, f = a.limits.gemini_5h.pct; return (w < 0 || f < 0) ? -1 : Math.min(w, f); };
 
 function render() {
   const accts = DATA.accounts;
   const def = accts.find(a => a.profiles.includes(DATA.default));
   const pick = accts.find(a => a.profiles.includes(DATA.pick));
-  const usable = accts.filter(a => gem(a) >= 5).length;
+  const usable = accts.filter(a => gem(a) >= MIN).length;
   const resets = accts.map(a => a.limits.gemini_5h).filter(l => l.pct < 50 && l.reset).map(l => l.reset).sort();
+  document.getElementById("legend").textContent = `Màu: xanh ≥ 50% · vàng 20–49% · cam ${MIN}–19% · đỏ dưới ${MIN}% (agy-hd không chọn account dưới ${MIN}% quota Gemini khi còn account khác đạt ngưỡng).`;
   document.getElementById("meta").innerHTML = "Lấy lúc <span class=\"when\">" + esc(fmtTime(DATA.generated)) + "</span>";
   document.getElementById("summary").innerHTML = [
     ["tile", "Account mặc định", def ? def.email : DATA.default, "profile " + DATA.default + (def ? " · Gemini còn " + Math.max(gem(def), 0) + "%" : "")],
-    ["tile pick", "Job mới sẽ chạy trên", pick ? pick.email : "không account nào đủ quota", pick ? "profile " + DATA.pick + " · Gemini còn " + gem(pick) + "%" : "mọi account dưới 5% Gemini"],
-    ["tile", "Account dùng được", usable + " / " + accts.length, "còn ≥ 5% quota Gemini (tuần và 5 giờ)"],
+    ["tile pick", "Job mới sẽ chạy trên", pick ? pick.email : "không account nào đủ quota", pick ? "profile " + DATA.pick + " · Gemini còn " + gem(pick) + "%" : "mọi account đã hết quota Gemini"],
+    ["tile", "Account dùng được", usable + " / " + accts.length, "còn ≥ " + MIN + "% quota Gemini (tuần và 5 giờ)"],
     ["tile", "Quota 5 giờ hồi sớm nhất", resets.length ? fmtLeft(resets[0]).replace(/^còn /, "") : "không có", resets.length ? fmtTime(resets[0]) : "mọi account còn ≥ 50% quota 5 giờ"],
   ].map(([cls, k, v, sub]) => `<div class="${cls}"><div class="eyebrow">${esc(k)}</div><div class="big">${esc(v)}</div><div class="sub">${esc(sub)}</div></div>`).join("");
 

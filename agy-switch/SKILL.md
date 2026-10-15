@@ -13,7 +13,7 @@ nên đổi account không mất ngữ cảnh.
 | Phạm vi | Lệnh | Ghi chú |
 |---|---|---|
 | Mặc định (agy-p, agy-hd, agy-sub chạy MỚI) | `agy-p switch <profile>` | phiên đang chạy giữ account cũ |
-| Mặc định = account còn nhiều quota nhất | `agy-p switch --auto` | bỏ qua account dưới 5% Gemini |
+| Mặc định = account còn nhiều quota nhất | `agy-p switch --auto` | bỏ qua account dưới 10% Gemini (trừ khi mọi account đều dưới 10%) |
 | Chỉ terminal hiện tại | `eval "$(agy-p use <profile>)"`; bỏ: `eval "$(agy-p use --unset)"` | đặt `AGY_PROFILE` |
 | Một lần chạy | `agy-p <profile> ...` hoặc `agy-p best ...` | `best` = account nhiều quota nhất lúc này |
 | Một job agy-hd đang có | `agy-hd switch <job> [profile]` | không ghi profile = account khác còn quota; job đang chạy thì thêm `-f` |
@@ -26,6 +26,8 @@ Kiểm sau khi đổi: `agy-p whoami` (terminal), `agy-p ls` (dấu * = mặc đ
 - `agy-hd start/fan` không có `-u`: ưu tiên account mặc định khi nó còn ≥ 20% và đang chạy < 2 job; không thì
   chọn account có quota / (1 + số job) cao nhất.
 - Job hết quota giữa chừng: tick (mỗi phút) chuyển job sang account khác và resume đúng conversation.
+- Account dưới 10% Gemini (`AGY_MIN_QUOTA`) không được chọn khi còn account khác đạt ngưỡng. Job đang ở account đó được
+  chuyển đi trước lần `agy-hd prompt` kế tiếp (lúc agy rảnh) hoặc khi `agy-hd resume`.
 
 ## Quy tắc
 

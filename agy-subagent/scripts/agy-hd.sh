@@ -163,6 +163,17 @@ job_loads() {  # in các cặp "--load <profile>=<số job đang mở>" cho agy-
   for p in "${!c[@]}"; do printf -- '--load\n%s=%s\n' "$p" "${c[$p]}"; done
 }
 pick_profile() { local a; mapfile -t a < <(job_loads); "$AGYP" pick "${a[@]}" "$@"; }   # $@: thêm --exclude-email ...
+MIN_QUOTA="${AGY_MIN_QUOTA:-10}"   # cùng ngưỡng (cùng biến môi trường) với agy-p pick
+QUOTA_MOVE=1                       # 0: resume giữ account đã ghi (switch tới account người dùng chỉ định)
+# Account của job dưới MIN_QUOTA % Gemini (min tuần, 5 giờ; cache agy-p ≤ 5 phút) mà còn account khác đạt ngưỡng:
+# in "<profile mới> <quota account cũ>". Chỉ gọi khi agy của job đang rảnh hoặc đã thoát, không cắt lượt đang chạy.
+low_quota_move() {  # $1=jd
+  local prof q np; prof=$(meta "$1" PROFILE); [[ -n $prof ]] && have_profiles || return 1
+  q=$("$AGYP" usage --tsv --max-age 300 2>/dev/null | awk -F'\t' -v p="$prof" '$1==p && $3>=0 && $4>=0 { print ($3<$4?$3:$4); exit }')
+  [[ -n $q ]] && (( q < MIN_QUOTA )) || return 1
+  np=$(pick_profile --strict --exclude-email "$(meta "$1" PROFILE_EMAIL)" 2>/dev/null) || return 1
+  echo "$np $q"
+}
 profile_env_in_pane() { herdr pane run "$1" "eval \"\$($AGYP env $2)\" && clear" >/dev/null; sleep 1; }   # $1=pane $2=profile
 # Khoá theo job: tick (timer mỗi phút) và lệnh tay (park/resume/restart/switch/interrupt/close) không được đổi
 # trạng thái cùng một job một lúc. Gặp 2026-10-08: tick tự restart job (thấy dòng quota trên màn hình) đúng lúc
@@ -240,6 +251,19 @@ screen() { herdr agent read "$1" --source "${2:-recent-unwrapped}" --lines "${3:
 # và transcript đã có câu trả lời, nhưng việc chưa xong. Thanh trạng thái hiện "· N subagent(s)" tới khi subagent trả về
 # (gặp 2026-10-08 khi e2e nhiều account: wait báo DONE trong lúc subagent còn chạy).
 subagent_busy() { screen "$1" visible 6 | grep -qE '[0-9]+ subagent\(s\)'; }
+wait_ready() { local i; for i in $(seq 30); do screen "$1" visible 30 | grep -q 'for shortcuts' && return 0; sleep 1; done; return 1; }   # agy vừa mở xong, nhận prompt được
+# Thông báo của agy lúc mở ("Changes to third-party model access … esc to dismiss", gặp 2026-10-12 khi resume job sang
+# account khác): herdr agent start báo "blocked during startup", rồi giữ agent_status=blocked + launch_pending=true kể cả
+# khi thông báo đã tắt và agy đang ở dấu nhắc, nên từ chối mọi prompt ("is blocked and requires interactive input").
+# Đã đo: một phím esc đóng thông báo và herdr về idle. Chỉ bấm khi herdr báo blocked VÀ (thông báo đang hiện, hoặc block lúc
+# khởi động mà agy đã ở dấu nhắc); không bấm khi đang hỏi trust folder (esc ở đó là từ chối) hay khi agy đang làm (huỷ lượt).
+dismiss_notice() {
+  local a v; a=$(herdr agent get "$1" 2>/dev/null) || return 1
+  [[ $(jq -r '.result.agent.agent_status' <<<"$a") == blocked ]] || return 1
+  v=$(screen "$1" visible 30); grep -q 'Do you trust' <<<"$v" && return 1
+  grep -q 'esc to dismiss' <<<"$v" || { [[ $(jq -r '.result.agent.launch_pending // false' <<<"$a") == true ]] && grep -q 'for shortcuts' <<<"$v"; } || return 1
+  herdr agent send-keys "$1" esc >/dev/null; sleep 2; [[ $(astate "$1") != blocked ]]
+}
 
 await_done() {  # $1=jd $2=timeout_s $3=số dòng transcript trước khi gửi prompt -> in: done|blocked|gone|timeout
   # herdr `agent prompt --wait` trả về ở lần idle đầu tiên, có thể nằm GIỮA các bước của agy (đã đo: báo DONE
@@ -272,6 +296,7 @@ send_prompt() {  # $1=jd  $2=text  $3=wait(1/0)  $4=timeout_s ; in STATUS
   fi
   t=$(tpath "$jd"); [[ -n $t ]] && n0=$(wc -l <"$t")
   out=$(herdr agent prompt "$id" "$full" 2>&1); local rc=$?
+  if (( rc )) && dismiss_notice "$id"; then echo "herdr báo agy blocked (thông báo lúc mở): đã bấm esc, gửi lại prompt" >&2; out=$(herdr agent prompt "$id" "$full" 2>&1); rc=$?; fi
   for _ in 1 2 3 4 5 6 7 8; do [[ -n $(tpath "$jd") ]] && break; sleep 1; done
   if [[ $rc -ne 0 ]]; then echo "STATUS=ERROR"; echo "$out" | jq -r '.error.message // .' 2>/dev/null | head -3; return 1; fi
   if [[ $wait -eq 0 ]]; then echo "STATUS=RUNNING"; return 0; fi
@@ -402,7 +427,14 @@ cmd_prompt() {
   OPTIND=1; while getopts "f:At:" o; do case $o in f) pfile=$OPTARG;; A) wait=0;; t) tmo=$OPTARG;; *) exit 2;; esac; done
   [[ -n $pfile ]] && text=$(<"$pfile"); [[ -n $text ]] || die "thiếu prompt"
   job_lock "$jd"   # đợi restart/switch đang chạy (nếu có) xong rồi mới gửi; nhả khoá trước khi chờ để tick vẫn xử lý được quota
-  [[ $(astate "$(basename "$jd")") == gone ]] && die "agent đã thoát; chạy: agy-hd resume $k"
+  local id st mv; id=$(basename "$jd"); st=$(astate "$id")
+  [[ $st == gone ]] && die "agent đã thoát; chạy: agy-hd resume $k"
+  # account của job đã dưới ngưỡng: agy đang rảnh nên chuyển account ngay, trước khi giao việc mới
+  if [[ $st == idle || $st == done ]] && ! busy "$jd" && mv=$(low_quota_move "$jd"); then
+    echo "account $(acct_of "$jd") còn ${mv#* }% quota Gemini (< ${MIN_QUOTA}%): chuyển job sang ${mv%% *} trước khi gửi prompt" >&2
+    cmd_switch "$id" "${mv%% *}" >&2 || return 1
+    wait_ready "$id"
+  fi
   flock -u 7; JOB_LOCKED=""
   send_prompt "$jd" "$text" $wait "$tmo"; local rc=$?; finalize "$jd"
   [[ $wait -eq 1 ]] && { echo "---"; result_of "$jd"; }; return $rc
@@ -464,8 +496,16 @@ cmd_resume() {
   local jd id cid; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need; job_lock "$jd"
   [[ $(astate "$id") == gone ]] || die "agent vẫn đang chạy; dùng agy-hd prompt"
   cid=$(cid_of "$jd"); [[ -n $cid ]] || die "không biết conversation id"
-  local prof; prof=$(meta "$jd" PROFILE)
+  local prof mv; prof=$(meta "$jd" PROFILE)
   if [[ -n $prof ]]; then
+    if (( QUOTA_MOVE )); then   # account cũ dưới ngưỡng: mở lại trên account khác (agy đang thoát, không mất lượt nào)
+      exec 8>"$JOBS/.pick.lock"; flock -w 120 8 || die "khoá chọn account bận quá 120 s"
+      if mv=$(low_quota_move "$jd"); then
+        echo "đổi account: $(acct_of "$jd") còn ${mv#* }% quota Gemini (< ${MIN_QUOTA}%) → ${mv%% *}"
+        prof=${mv%% *}; setmeta "$jd" PROFILE "$prof"; setmeta "$jd" PROFILE_EMAIL "$("$AGYP" email "$prof")"
+      fi
+      flock -u 8
+    fi
     "$AGYP" env "$prof" >/dev/null 2>&1 || die "profile '$prof' của $id không dùng được (agy-p ls); chuyển account: agy-hd switch $id <profile>"
     profile_env_in_pane "$(meta "$jd" PANE)" "$prof"
   fi
@@ -515,7 +555,7 @@ cmd_restart() {
     flock -u 8
   fi
   cmd_resume "$id" || return 1
-  for i in $(seq 30); do screen "$id" visible 30 | grep -q 'for shortcuts' && break; sleep 1; done
+  wait_ready "$id"
   send_prompt "$jd" "$msg" 0 900
   for i in $(seq 20); do [[ $(astate "$id") == working ]] && break; sleep 1; done
   setmeta "$jd" RESTARTING ""
@@ -545,7 +585,7 @@ cmd_switch() {  # agy-hd switch <job> [profile] [-f]
     [[ $(astate "$id") == gone ]] || die "$id không thoát được: agy-hd close $id"
   fi
   setmeta "$jd" PROFILE "$np"; setmeta "$jd" PROFILE_EMAIL "$("$AGYP" email "$np")"   # chỉ ghi khi agy cũ đã thoát
-  cmd_resume "$id" >/dev/null || return 1
+  local QUOTA_MOVE=0; cmd_resume "$id" >/dev/null || return 1   # giữ đúng account vừa chọn
   echo "đã chuyển $id: $old → $(acct_of "$jd"). Conversation giữ nguyên; giao việc tiếp: agy-hd prompt $id \"...\""
 }
 cmd_accounts() {  # bảng account + quota + job đang mở
