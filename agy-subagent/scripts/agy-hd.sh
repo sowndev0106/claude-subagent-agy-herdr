@@ -12,7 +12,7 @@
 #       -u profile agy-p chạy job (account riêng). Không có -u: agy-p pick tự chọn (ưu tiên profile mặc định,
 #          không thì account còn nhiều quota nhất, chia đều theo số job đang mở). Hết quota giữa chừng: tick
 #          tự chuyển job sang account khác và resume đúng conversation đó (hội thoại dùng chung mọi profile).
-#       -W worktree riêng (branch agy/<id>)   -C mang theo thay đổi chưa commit (cần -W)
+#       -W worktree riêng (detached, không branch, không commit)   -C mang theo thay đổi chưa commit (cần -W)
 #       -R chỉ đọc (lời dặn trong prompt)     -A async: không chờ xong, in ACCESS rồi thoát
 #       -P park sau khi DONE (nhả RAM agy). fan mặc định park; fan -K để giữ agent sống
 #       -t timeout chờ (mặc định 900)
@@ -42,10 +42,13 @@
 #                            STATUS.tsv + events.log, tự restart job hết hạn mức. systemd timer agy-hd-tick chạy mỗi phút
 #   agy-hd close <job>       đóng workspace (kill mọi thứ trong đó)
 #   agy-hd list              các job + trạng thái
-#   agy-hd wt-diff|wt-drop <job>   quản lý worktree của job -W
-#   agy-hd wt-merge <job> -m "type(scope): việc đã làm" [-m "thân"] | --no-commit
-#                            gộp SQUASH thành MỘT commit mang tên người dùng (git config của repo), không commit
-#                            "agy: ..." và không commit "Merge agy/..."; thiếu -m thì từ chối
+#   agy-hd wt-diff <job> [--stat]   thay đổi job -W đã làm (so với lúc giao việc)
+#   agy-hd wt-merge <job> -m "type(scope): việc đã làm" [-m "thân"] | --no-commit   [--3way]
+#                            áp thay đổi của job vào cây làm việc của repo. -m: rồi commit ĐÚNG các file đó thành MỘT
+#                            commit mang git identity của repo, message theo Conventional Commits, không dấu vết
+#                            agy/công cụ (từ chối nếu sai). --no-commit: để chưa commit cho agent quản lý tự commit.
+#                            Không bao giờ có commit "agy: ..." hay "Merge agy/..."; job không tạo commit/branch nào
+#   agy-hd wt-drop <job>     bỏ thay đổi của job, dọn worktree
 #   agy-hd gc [ngày=3] [-y]  đóng workspace + xóa job cũ đã xong, không có thay đổi chưa merge
 #   agy-hd fan -i tasks_dir -o results_dir [-j 3] [-d dir] [-u profile] [-W [-C]] [-R] [-t giây]   nhiều task song song (<=4)
 #
@@ -56,6 +59,7 @@ _s=$0; while [[ -L $_s ]]; do _d=$(cd -P "$(dirname "$_s")" && pwd); _s=$(readli
 _HERE=$(cd -P "$(dirname "$_s")" && pwd)
 for _c in "$_HERE/compat.sh" "$_HERE/../../agy-subagent/scripts/compat.sh"; do [[ -f $_c ]] && { source "$_c"; break; }; done
 declare -F agy_require >/dev/null && agy_require jq herdr agy   # thiếu thì tự sửa (setup.sh fix -y)
+source "$_HERE/wt.sh" || { echo "agy-hd: thiếu $_HERE/wt.sh (chạy agy-setup fix)" >&2; exit 2; }   # worktree -W: không commit, không branch
 set -uo pipefail
 MODEL="gemini-3.8-flash-high"
 JOBS="${AGY_HD_JOBS:-$HOME/.cache/agy-hd}"
@@ -240,18 +244,12 @@ access() {
   echo "  xem live   : $sp agent attach $id        (hoặc mở herdr TUI, chọn workspace '$id'; $sp workspace focus $ws)"
   echo "  log live   : agy-hd logs $id      | transcript: ${t:-<chưa có, hiện sau khi prompt đầu được gửi>}"
   echo "  prompt tiếp: agy-hd prompt $id \"...\"   | dừng: agy-hd interrupt $id   | đóng: agy-hd close $id"
-  [[ -n $(meta "$jd" BRANCH) ]] && echo "  worktree   : $(meta "$jd" WORKTREE)  (branch $(meta "$jd" BRANCH))"
+  [[ -n $(meta "$jd" WORKTREE) ]] && echo "  worktree   : $(meta "$jd" WORKTREE)  (không branch, không commit: wt-diff / wt-merge -m / wt-drop)"
   echo "  prompt gốc : $jd/prompt.md"
 }
-# Commit nội bộ trên nhánh agy/<id> mang tên người dùng của repo (chỉ dùng tên agy khi repo chưa cấu hình user).
-# Các commit này không bao giờ vào branch chung: wt-merge gộp squash thành một commit có message rõ ràng.
-git_id() { git -C "$1" config user.name >/dev/null 2>&1 && git -C "$1" config user.email >/dev/null 2>&1 || echo "-c user.name=agy -c user.email=agy@local"; }
-finalize() {  # worktree: wrapper (không phải agy) commit những gì agy đã sửa
-  local jd=$1 w; w=$(meta "$jd" WORKTREE); [[ -n $w && -d $w ]] || return 0
-  if [[ -n $(git -C "$w" status --porcelain) ]]; then
-    git -C "$w" add -A; git -C "$w" $(git_id "$w") commit -q -m "wip: agy job $(basename "$jd")" || true
-  fi
-}
+# worktree: chụp những gì agy đã sửa vào index riêng của worktree. Không commit (wt.sh): lịch sử repo chỉ có commit
+# do agent quản lý tạo bằng wt-merge -m hoặc tự commit.
+finalize() { local w; w=$(meta "$1" WORKTREE); [[ -n $w && -d $w ]] && wt_snap "$w"; return 0; }
 screen() { herdr agent read "$1" --source "${2:-recent-unwrapped}" --lines "${3:-40}" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; }
 # agy đang chờ subagent (tool invoke_subagent): agent chính kết thúc lượt bằng "đang chờ subagent", herdr báo idle/done
 # và transcript đã có câu trả lời, nhưng việc chưa xong. Thanh trạng thái hiện "· N subagent(s)" tới khi subagent trả về
@@ -349,22 +347,14 @@ cmd_start() {
   fi
   local n id jd; n=$(printf '%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-\n' '-' | cut -c1-20)
   id="a-$n-$(printf '%04x' $((RANDOM % 65536)))"; jd="$JOBS/$id"; mkdir -p "$jd"
-  local repo="" wtdir="" branch="" base="" workdir=$dir
+  local repo="" wtdir="" base="" workdir=$dir
 
   if [[ $wt -eq 1 ]]; then
     repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || die "-W cần workdir là git repo"
     local rel; rel=$(git -C "$dir" rev-parse --show-prefix)
-    branch="agy/$id"; wtdir="$repo/../.agy-wt/$(basename "$repo")-$id"; mkdir -p "$(dirname "$wtdir")"
-    git -C "$repo" worktree add -q -b "$branch" "$wtdir" HEAD || die "tạo worktree thất bại"
-    wtdir=$(cd "$wtdir" && pwd); workdir="$wtdir/$rel"; base=$(git -C "$wtdir" rev-parse HEAD)
-    if [[ -n $(git -C "$repo" status --porcelain) ]]; then
-      if [[ $carry -eq 1 ]]; then
-        git -C "$repo" diff --binary HEAD | git -C "$wtdir" apply --whitespace=nowarn - || die "carry diff thất bại"
-        git -C "$repo" ls-files -z -o --exclude-standard | while IFS= read -r -d '' f; do mkdir -p "$wtdir/$(dirname "$f")"; cp -a "$repo/$f" "$wtdir/$f"; done
-        git -C "$wtdir" add -A
-        git -C "$wtdir" $(git_id "$wtdir") commit -q -m "wip: carry uncommitted changes into job $id" && base=$(git -C "$wtdir" rev-parse HEAD)
-      else echo "WARN: repo có thay đổi chưa commit, worktree KHÔNG thấy chúng. Dùng -C để mang theo." >&2; fi
-    fi
+    wtdir="$repo/../.agy-wt/$(basename "$repo")-$id"
+    base=$(wt_create "$repo" "$wtdir" "$carry") || die "tạo worktree thất bại (hoặc mang thay đổi chưa commit sang thất bại)"
+    wtdir=$(cd "$wtdir" && pwd); workdir="$wtdir/$rel"
   fi
 
   local ws pane tab; place_pane "$workdir" "$id"; ws=$PL_WS; pane=$PL_PANE; tab=$PL_TAB
@@ -378,7 +368,7 @@ PANE=$pane
 WORKDIR=$workdir
 REPO=$repo
 WORKTREE=$wtdir
-BRANCH=$branch
+BRANCH=
 BASE=$base
 CARRY=$carry
 RO=$ro
@@ -407,7 +397,7 @@ EOF
   done
   for i in 1 2 3 4 5 6 7 8 9 10; do screen "$id" visible 30 | grep -q 'for shortcuts' && break; sleep 1; done
 
-  local guard="Ràng buộc: không git push/commit/reset/checkout/branch, không xóa file ngoài phạm vi được giao, không truy cập mạng nội bộ 10.0.0.0/8, không bật process nền (nohup/setsid). Chạy mọi lệnh ở chế độ chờ cho tới khi xong: không dùng chế độ chạy nền/bất đồng bộ của công cụ chạy lệnh, không kết thúc lượt khi còn lệnh đang chạy."
+  local guard="Ràng buộc: không tạo commit và không chạy git commit/push/reset/checkout/branch/stash/tag hay đổi git config (agent quản lý tự commit sau khi review), không xóa file ngoài phạm vi được giao, không truy cập mạng nội bộ 10.0.0.0/8, không bật process nền (nohup/setsid). Chạy mọi lệnh ở chế độ chờ cho tới khi xong: không dùng chế độ chạy nền/bất đồng bộ của công cụ chạy lệnh, không kết thúc lượt khi còn lệnh đang chạy."
   [[ $wt -eq 1 ]] && guard="$guard Bạn đang ở git worktree riêng: chỉ sửa file trong thư mục hiện tại, đừng cd ra ngoài."
   [[ $ro -eq 1 ]] && guard="$guard CHẾ ĐỘ CHỈ ĐỌC: tuyệt đối không tạo/sửa/xóa file, chỉ đọc và báo cáo."
   printf 'GUARD: %s\n' "$guard" >"$jd/prompt.md"
@@ -420,7 +410,7 @@ $guard" $wait "$tmo"; local rc=$?
   finalize "$jd"
   [[ $ro -eq 1 && $(tree_sig) != "$sig_before" ]] && { echo "⚠ RO_VIOLATION: cây làm việc đổi trong lúc chạy -R. Xem: git -C $workdir status; hoàn tác trước khi tin kết quả."; rc=1; }
   access "$jd" | grep -E 'transcript' | sed 's/^ *//'
-  if [[ $wt -eq 1 ]]; then echo "DIFFSTAT:"; git -C "$repo" diff --stat "$base" "$branch" 2>/dev/null | tail -20; fi
+  if [[ $wt -eq 1 ]]; then echo "DIFFSTAT:"; wt_diff "$wtdir" "$base" --stat 2>/dev/null | tail -20; fi
   if [[ $wait -eq 1 ]]; then echo "---"; result_of "$jd"; fi
   [[ $park -eq 1 && $rc -eq 0 ]] && cmd_park "$id" >&2   # DONE rồi mới park; kết quả đã lưu ở transcript
   return $rc
@@ -447,7 +437,7 @@ cmd_prompt() {
 }
 cmd_status() {
   local jd id st t; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need; st=$(astate "$id")
-  echo "JOB=$id  STATE=$st  AGE=$(ago "$(meta "$jd" STARTED)")  WORKSPACE=$(meta "$jd" WORKSPACE)  BRANCH=$(meta "$jd" BRANCH)"
+  echo "JOB=$id  STATE=$st  AGE=$(ago "$(meta "$jd" STARTED)")  WORKSPACE=$(meta "$jd" WORKSPACE)  WORKTREE=$(meta "$jd" WORKTREE)"
   if [[ $st == working ]]; then t=$(tpath "$jd"); if [[ -n $t ]]; then local i=$(( $(date +%s) - $(file_mtime "$t") ))
     echo "IDLE=${i}s$([[ $i -gt $STALL ]] && echo "  ⚠ STALL: transcript không đổi > ${STALL}s (xem logs, cân nhắc interrupt)")"; fi; fi
   [[ $st == blocked ]] && echo "⚠ BLOCKED: agy đang hỏi/chờ duyệt. Xem: agy-hd logs $id ; attach: $(hcli) agent attach $id"
@@ -469,8 +459,8 @@ cmd_access()  { local jd; jd=$(resolve "${1:?job}"); use_session "$jd"; access "
 cmd_summary() {
   local jd st; jd=$(resolve "${1:?job}"); use_session "$jd"; finalize "$jd"
   echo "JOB=$(basename "$jd")  STATE=$(astate "$(basename "$jd")")"; echo "---"; result_of "$jd"
-  local b r; b=$(meta "$jd" BRANCH); r=$(meta "$jd" REPO)
-  [[ -n $b ]] && { echo "--- DIFFSTAT $b"; git -C "$r" diff --stat "$(meta "$jd" BASE)" "$b"; }
+  local w; w=$(meta "$jd" WORKTREE)
+  [[ -n $w && -d $w ]] && { echo "--- DIFFSTAT $w"; wt_diff "$w" "$(meta "$jd" BASE)" --stat; }
 }
 cmd_interrupt() {
   local jd id st i; jd=$(resolve "${1:?job}"); id=$(basename "$jd"); use_session "$jd"; need; job_lock "$jd"
@@ -763,39 +753,26 @@ cmd_list() {
   local d
   for d in $(ls -1dt "$JOBS"/*/ 2>/dev/null | tac); do d=${d%/}
     local st; st=$( ( use_session "$d"; herdr status server 2>/dev/null | grep -q running && astate "$(basename "$d")" || echo no-server ) )
-    printf '%-8s %-7s %-14s %-6s %-22s %-14s %s  %s\n' "$st" "$(ago "$(meta "$d" STARTED)")" "$(meta "$d" SESSION)" "$(meta "$d" WORKSPACE)" "$(basename "$d")" "$(p=$(meta "$d" PROFILE); echo "${p:--}")" "$(meta "$d" BRANCH)" "$(p=$(meta "$d" PROMPT_HEAD); echo "${p:0:40}")"
+    printf '%-8s %-7s %-14s %-6s %-22s %-14s %s  %s\n' "$st" "$(ago "$(meta "$d" STARTED)")" "$(meta "$d" SESSION)" "$(meta "$d" WORKSPACE)" "$(basename "$d")" "$(p=$(meta "$d" PROFILE); echo "${p:--}")" "$(w=$(meta "$d" WORKTREE); [[ -n $w ]] && echo worktree || echo -)" "$(p=$(meta "$d" PROMPT_HEAD); echo "${p:0:40}")"
   done
 }
 cmd_wt() {
-  local sub=$1 jd r b w base nocommit=0 margs=(); jd=$(resolve "${2:?job}"); r=$(meta "$jd" REPO); b=$(meta "$jd" BRANCH); w=$(meta "$jd" WORKTREE); base=$(meta "$jd" BASE)
-  [[ -n $b ]] || die "job này không chạy với -W"; use_session "$jd"
-  shift 2; while (( $# )); do case $1 in -m) margs+=(-m "${2:?-m cần message}"); shift 2;; --no-commit) nocommit=1; shift;; *) die "tham số lạ: $1";; esac; done
+  local sub=$1 jd id r b w base rc; jd=$(resolve "${2:?job}"); id=$(basename "$jd"); shift 2
+  r=$(meta "$jd" REPO); b=$(meta "$jd" BRANCH); w=$(meta "$jd" WORKTREE); base=$(meta "$jd" BASE)
+  [[ -n $w ]] || die "job này không chạy với -W"; use_session "$jd"
   case $sub in
-  wt-diff) finalize "$jd"; git -C "$r" diff "$base" "$b" ;;
+  wt-diff) [[ -d $w ]] || die "worktree không còn: $w"; wt_diff "$w" "$base" "$@" ;;
   wt-merge)
-    [[ $(astate "$(basename "$jd")") == working ]] && die "agy còn đang chạy (agy-hd wait / interrupt)"; finalize "$jd"
-    if [[ $(meta "$jd" CARRY) == 1 ]]; then
-      git -C "$r" diff --binary "$base" "$b" | git -C "$r" apply --3way --whitespace=nowarn - \
-        || { echo "CONFLICT khi áp diff vào cây làm việc của $r. Worktree giữ nguyên: $w"; exit 1; }
-      echo "đã áp thay đổi của agy vào cây làm việc (chưa commit)"
-    else
-      # Một commit duy nhất, mang tên người dùng, message rõ ràng do người gọi viết. Không merge --no-ff (sẽ kéo các
-      # commit nội bộ của agy/<id> và một commit "Merge agy/..." vào branch chung). Sự cố 2026-10-15: MR ai-hub !192,
-      # gateway !92, console !72 phải viết lại lịch sử để bỏ 13 commit "agy: ..." + 11 merge "Merge agy/...".
-      (( nocommit )) || (( ${#margs[@]} )) || die 'wt-merge cần message commit rõ ràng: agy-hd wt-merge <job> -m "type(scope): việc đã làm" [-m "thân"]  (hoặc --no-commit rồi tự commit)'
-      (( nocommit )) || ! grep -qiE '^(agy|merge agy|wip)\b' <<<"${margs[1]}" || die "message phải mô tả thay đổi, không phải \"${margs[1]}\""
-      [[ -n $(git_id "$r") ]] && die "repo $r chưa cấu hình git user.name/user.email: commit phải mang tên người dùng"
-      git -C "$r" diff --cached --quiet || die "repo $r đang có thay đổi đã stage: commit hoặc unstage trước, để commit gộp chỉ chứa việc của agy"
-      git -C "$r" merge --squash "$b" >/dev/null || { echo "CONFLICT: giải quyết tay trong $r rồi tự git commit -m \"type(scope): ...\", hoặc git reset --merge"; exit 1; }
-      if git -C "$r" diff --cached --quiet; then echo "agy không có thay đổi để gộp"
-      elif (( nocommit )); then echo "đã gộp thay đổi của agy vào index (chưa commit): tự git commit -m \"type(scope): ...\""
-      else git -C "$r" commit -q "${margs[@]}" && echo "đã commit: $(git -C "$r" log -1 --format='%h %an: %s')"; fi
-    fi
-    close_ui "$jd"
-    git -C "$r" worktree remove --force "$w" && git -C "$r" branch -D "$b" >/dev/null && echo "đã dọn $b + đóng tab" ;;
+    # Không merge branch nào, không commit hộ agy. Sự cố 2026-10-15: merge --no-ff kéo 13 commit "agy: ..." (tác giả
+    # agy@local) + 11 commit "Merge agy/..." vào MR ai-hub !192, gateway !92, console !72; phải viết lại lịch sử.
+    [[ $(astate "$id") == working ]] && die "agy còn đang chạy (agy-hd wait / interrupt)"
+    job_lock "$jd"; finalize "$jd"
+    wt_merge "$w" "$base" "$r" "$id" "$b" "$@"; rc=$?
+    (( rc == 2 )) && exit 2
+    (( rc )) && exit 1
+    close_ui "$jd"; echo "đã đóng tab $id" ;;
   wt-drop)
-    close_ui "$jd"
-    git -C "$r" worktree remove --force "$w"; git -C "$r" branch -D "$b"; echo "đã bỏ $b" ;;
+    close_ui "$jd"; wt_remove "$r" "$w" "$b"; echo "đã bỏ thay đổi của $id, dọn worktree $w" ;;
   esac
 }
 cmd_gc() {
@@ -804,11 +781,13 @@ cmd_gc() {
     local id st b w r; id=$(basename "$d"); b=$(meta "$d" BRANCH); w=$(meta "$d" WORKTREE); r=$(meta "$d" REPO)
     st=$( ( use_session "$d"; astate "$id" ) )
     [[ $st == working || $st == blocked ]] && continue
-    if [[ -n $b && -d $w && $(git -C "$r" rev-parse "$b" 2>/dev/null) != $(meta "$d" BASE) ]]; then
-      echo "GIỮ   $id  ($b có thay đổi chưa merge)"; keep=$((keep+1)); continue; fi
+    if [[ -n $w && -d $w ]] && wt_changed "$w" "$(meta "$d" BASE)"; then
+      echo "GIỮ   $id  (worktree còn thay đổi chưa áp: wt-merge hoặc wt-drop)"; keep=$((keep+1)); continue; fi
+    if [[ -n $b ]] && git -C "$r" rev-parse -q --verify "$b" >/dev/null && [[ $(git -C "$r" rev-parse "$b") != $(meta "$d" BASE) ]]; then
+      echo "GIỮ   $id  (branch kiểu cũ $b còn commit chưa gộp: git -C $r diff $(meta "$d" BASE) $b; bỏ: git -C $r branch -D $b)"; keep=$((keep+1)); continue; fi
     echo "DỌN   $id  ($st)"; del=$((del+1))
     if [[ $yes -eq 1 ]]; then ( use_session "$d"; close_ui "$d" )
-      [[ -n $b && -d $w ]] && { git -C "$r" worktree remove --force "$w"; git -C "$r" branch -D "$b" >/dev/null; }; rm -rf "$d"; fi
+      [[ -n $r && -d $r ]] && wt_remove "$r" "$w" "$b"; rm -rf "$d"; fi
   done
   local f n c
   for f in "$JOBS"/.sessions/*.log; do [[ -f $f ]] || continue; n=$(basename "$f" .log)
@@ -830,7 +809,7 @@ cmd_fan() {
     f=$1; id=$(basename "$f" .md); "$SELF" start -n "$id" -f "$f" -d "$dir" -t "$tmo" $fl_str >"$res/$id.out" 2>"$res/$id.err"; rc=$?
     job=$(sed -n "s/^JOB=//p" "$res/$id.out" | head -1)
     printf "%s\t%s\t%s\t%s\t%s\n" "$id" "$(sed -n "s/^STATUS=//p" "$res/$id.out" | head -1 | cut -c1-12)" "$job" \
-      "$(sed -n "s/.*  tab: \([^ ]*\) .*/\1/p" "$res/$id.out" | head -1)" "$(sed -n "s/^BRANCH=//p;s/.*(branch \(.*\))/\1/p" "$res/$id.out" | head -1)" >>"$res/SUMMARY.tsv"' _ {} &
+      "$(sed -n "s/.*  tab: \([^ ]*\) .*/\1/p" "$res/$id.out" | head -1)" "$(sed -n "s/^  worktree   : \([^ ]*\) .*/\1/p" "$res/$id.out" | head -1)" >>"$res/SUMMARY.tsv"' _ {} &
   local fan=$!
   # ACCESS.txt: gom dòng truy cập ngay khi từng task đã lên (đọc được trong lúc đang chạy)
   while kill -0 $fan 2>/dev/null; do for f in "$res"/*.out; do [[ -f $f ]] && grep -q '^ACCESS:' "$f" && ! grep -q "^== $(basename "$f" .out)$" "$res/ACCESS.txt" \

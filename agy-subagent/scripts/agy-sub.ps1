@@ -125,7 +125,6 @@ if (-not (Test-Path $jobDir)) {
     [System.IO.Directory]::CreateDirectory($jobDir) | Out-Null
 }
 
-$branch = ""
 $wtdir = ""
 $repo = ""
 $base = ""
@@ -157,7 +156,6 @@ if ($Worktree) {
         }
     } catch {}
 
-    $branch = "agy/$id"
     $repoName = Split-Path $repo -Leaf
     $repoParent = Split-Path $repo -Parent
     $wtdir = Join-Path (Join-Path $repoParent ".agy-wt") "$repoName-$id"
@@ -167,7 +165,8 @@ if ($Worktree) {
         [System.IO.Directory]::CreateDirectory($wtParent) | Out-Null
     }
 
-    git -C $repo worktree add -q -b $branch $wtdir HEAD
+    # worktree detached: không branch, không commit (giống wt.sh). BASE = tree id lúc giao việc.
+    git -C $repo worktree add -q --detach $wtdir HEAD
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("agy-sub: tạo worktree thất bại")
         exit 2
@@ -175,7 +174,6 @@ if ($Worktree) {
 
     $wtdir = (Resolve-Path $wtdir).Path
     $WorkDir = if ($rel) { Join-Path $wtdir $rel } else { $wtdir }
-    $base = (git -C $wtdir rev-parse HEAD 2>$null).Trim()
 
     $statusPorcelain = git -C $repo status --porcelain 2>$null
     if ($statusPorcelain) {
@@ -208,15 +206,15 @@ if ($Worktree) {
                 }
             }
 
-            git -C $wtdir add -A 2>$null
-            $idArgs = if (git -C $wtdir config user.name) { @() } else { @("-c", "user.name=agy", "-c", "user.email=agy@local") }
-            git -C $wtdir @idArgs commit -q -m "wip: carry uncommitted changes into job $id" 2>$null
-            if ($LASTEXITCODE -eq 0) {
-                $base = (git -C $wtdir rev-parse HEAD 2>$null).Trim()
-            }
         } else {
             [Console]::Error.WriteLine("WARN: repo có thay đổi chưa commit, worktree KHÔNG thấy chúng (chỉ thấy HEAD). Dùng -C để mang theo.")
         }
+    }
+    git -C $wtdir add -A 2>$null | Out-Null
+    $base = (git -C $wtdir write-tree 2>$null).Trim()
+    if (-not $base) {
+        [Console]::Error.WriteLine("agy-sub: không chụp được trạng thái ban đầu của worktree")
+        exit 2
     }
 }
 
@@ -237,7 +235,7 @@ if ($ReadOnly) {
 }
 
 # 5. Ràng buộc an toàn vào prompt
-$guard = "Ràng buộc: không git push/commit/reset/checkout/branch, không xóa file ngoài phạm vi được giao, không truy cập mạng nội bộ 10.0.0.0/8, không bật process nền (nohup/setsid)."
+$guard = "Ràng buộc: không tạo commit và không chạy git commit/push/reset/checkout/branch/stash/tag hay đổi git config (agent quản lý tự commit sau khi review), không xóa file ngoài phạm vi được giao, không truy cập mạng nội bộ 10.0.0.0/8, không bật process nền (nohup/setsid)."
 if ($Worktree) {
     $guard += " Bạn đang ở git worktree riêng: chỉ sửa file trong thư mục hiện tại, đừng cd ra ngoài."
 }
@@ -257,7 +255,7 @@ NAME=$cleanName
 WORKDIR=$WorkDir
 REPO=$repo
 WORKTREE=$wtdir
-BRANCH=$branch
+BRANCH=
 BASE=$base
 CARRY=$(if ($Carry) { 1 } else { 0 })
 STARTED=$startedEpoch
@@ -437,16 +435,11 @@ if ($ReadOnly) {
 }
 [System.IO.File]::WriteAllText((Join-Path $jobDir "state"), $state, [System.Text.Encoding]::UTF8)
 
-# 11. Worktree commit kết quả
+# 11. Worktree: chỉ chụp thay đổi vào index của worktree, không commit. Gộp: agy-ctl wt-merge <job> -m "type(scope): ..."
 $diffstat = ""
 if ($wtdir) {
-    $dirty = git -C $wtdir status --porcelain 2>$null
-    if ($dirty) {
-        git -C $wtdir add -A 2>$null
-        $idArgs = if (git -C $wtdir config user.name) { @() } else { @("-c", "user.name=agy", "-c", "user.email=agy@local") }
-        git -C $wtdir @idArgs commit -q -m "wip: agy job $id ($cleanName)" 2>$null | Out-Null
-    }
-    $diffLines = git -C $repo diff --stat $base $branch 2>$null
+    git -C $wtdir add -A 2>$null | Out-Null
+    $diffLines = git -C $wtdir diff --cached --stat --no-color --no-ext-diff $base 2>$null
     if ($diffLines) {
         $diffstat = ($diffLines | Select-Object -Last 20) -join "`n"
     }
@@ -466,7 +459,6 @@ if ($resultObj -and $resultObj.usage) {
 Write-Output "RAW=$(Join-Path $jobDir 'result.json')"
 
 if ($wtdir) {
-    Write-Output "BRANCH=$branch"
     Write-Output "WORKTREE=$wtdir"
     Write-Output "DIFFSTAT:"
     if ($diffstat) {

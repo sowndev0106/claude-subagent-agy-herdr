@@ -51,7 +51,10 @@ if run carry; then echo "== -W -C: mang thay đổi chưa commit, merge không c
   check "STATUS=DONE"                "grep -q '^STATUS=DONE' <<<\"\$out\""
   check "worktree thấy keep.txt bẩn" "grep -q 'x=2' '$wtd/keep.txt'"
   check "diffstat chỉ a.py"          "grep -q 'a.py' <<<\"\$out\" && ! grep -q 'keep.txt |' <<<\"\$out\""
-  $HD wt-merge carry >/dev/null 2>&1
+  check "worktree detached, không branch agy/" "! git -C '$wtd' symbolic-ref -q HEAD && ! git -C '$T/repo' branch | grep -q agy/"
+  wl=$($HD wt-diff carry --name-only); echo "  (wt-diff --name-only: $(tr '\n' ' ' <<<"$wl"))"
+  check "wt-diff có a.py, không có keep.txt mang sang" "grep -qx a.py <<<\"\$wl\" && ! grep -q keep.txt <<<\"\$wl\""
+  $HD wt-merge carry --no-commit >/dev/null 2>&1
   check "a.py đã sửa ở main"         "grep -q 'a + b' '$T/repo/a.py'"
   check "keep.txt bẩn chưa commit"   "grep -q 'x=2' '$T/repo/keep.txt' && git -C '$T/repo' status --porcelain | grep -q keep.txt"
   check "không có commit mới"        "[[ \$(git -C '$T/repo' rev-list --count HEAD) -eq 1 ]]"
@@ -64,8 +67,8 @@ if run conflict; then echo "== merge conflict (không -C)"
   ( cd "$T/repo" && printf 'def add(a, b):\n    return b + a\n' > a.py && $G commit -qam "main sửa khác" )
   out=$($HD wt-merge conf -m "fix(a): add sums both operands" 2>&1); rc=$?
   check "exit 1 + CONFLICT"          "[[ $rc -eq 1 ]] && grep -q CONFLICT <<<\"\$out\""
-  git -C "$T/repo" reset -q --merge 2>/dev/null
-  check "wt-drop dọn"                "$HD wt-drop conf >/dev/null 2>&1; ! git -C '$T/repo' branch | grep -q agy/"
+  check "cây làm việc không bị đụng"  "[[ -z \$(git -C '$T/repo' status --porcelain) ]]"
+  check "wt-drop dọn"                "$HD wt-drop conf >/dev/null 2>&1; ! git -C '$T/repo' branch | grep -q agy/ && [[ \$(git -C '$T/repo' worktree list | wc -l) -eq 1 ]]"
 fi
 
 if run interrupt; then echo "== interrupt (dọn lệnh con) + resume"
@@ -96,6 +99,8 @@ if run fan; then echo "== fan 3 task -j 2 -W, ACCESS.txt sớm"
   for i in 1 2 3; do $HD wt-merge "t$i" -m "test: add f$i.txt" >/dev/null 2>&1; done
   check "3 file đã merge"            "[[ \$(cat '$T'/repo/f?.txt 2>/dev/null | tr -d '\n') == 123 ]]"
   check "3 commit thường, không merge, không tên agy" "[[ \$(git -C '$T/repo' rev-list --merges --count HEAD) -eq 0 ]] && ! git -C '$T/repo' log --format='%an %ae %s' | grep -qi agy"
+  check "đúng 4 commit, chỉ branch main, không ref nào khác" "[[ \$(git -C '$T/repo' rev-list --all --count) -eq 4 && \$(git -C '$T/repo' for-each-ref --format='%(refname)') == refs/heads/main ]]"
+  check "commit mang git identity của repo" "[[ \$(git -C '$T/repo' log -1 --format='%an <%ae>') == \"\$(git -C '$T/repo' config user.name) <\$(git -C '$T/repo' config user.email)>\" ]]"
 fi
 
 if run gc; then echo "== gc"

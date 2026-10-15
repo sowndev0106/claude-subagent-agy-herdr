@@ -71,7 +71,7 @@ Bộ script headless có sẵn bản chạy trực tiếp trên Windows trong `s
 | `-s schema` | JSON schema (chuỗi hoặc file) → `structured_output` |
 | `-R` | chỉ đọc (lệnh trong prompt, không phải sandbox thật) |
 | `-n name` | tên job (id = name-HHMMSS-rand) |
-| `-W` | worktree riêng, branch `agy/<id>`, wrapper tự commit |
+| `-W` | worktree riêng (detached), không branch, không commit; gộp: `agy-ctl wt-merge <job> -m "type(scope): ..."` hoặc `--no-commit` |
 | `-o file` | copy `result.json` ra file này |
 | `-t sec` | timeout, mặc định 600 |
 

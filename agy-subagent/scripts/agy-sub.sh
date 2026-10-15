@@ -7,7 +7,7 @@
 #             [-n name]               # tên job (dễ nhớ; id = name-HHMMSS)
 #             [-d workdir]            # cwd của agy (mặc định: $PWD)
 #             [-u profile]            # account agy-p (skill agy-accounts); không có: $AGY_PROFILE, không thì agy-p pick
-#             [-W]                    # chạy trong git worktree riêng (branch agy/<id>), tự commit
+#             [-W]                    # chạy trong git worktree riêng (detached, không branch, không commit); gộp: agy-ctl wt-merge
 #             [-C]                    # (cần -W) mang thay đổi CHƯA commit của repo vào worktree
 #             [-S]                    # chạy agy với --sandbox (hạn chế terminal)
 #             [-r conversation_id]    # tiếp tục hội thoại trước
@@ -21,13 +21,14 @@
 # events.jsonl (stream trực tiếp), result.json. Điều khiển bằng agy-ctl.sh
 # (list/status/tail/history/summary/stop/wt-*).
 #
-# stdout: JOB=<id>, CONVERSATION_ID, STATUS, [BRANCH/WORKTREE/DIFFSTAT], `---`, response.
+# stdout: JOB=<id>, CONVERSATION_ID, STATUS, [WORKTREE/DIFFSTAT], `---`, response.
 # exit:   0 = SUCCESS, 1 = agy lỗi / status khác SUCCESS, 124 = timeout, 130 = bị stop.
 # Nạp lớp tương thích (macOS/BSD/busybox, bash >= 4.4): tìm thư mục thật của script qua symlink mà không cần readlink -f
 _s=$0; while [[ -L $_s ]]; do _d=$(cd -P "$(dirname "$_s")" && pwd); _s=$(readlink "$_s"); [[ $_s == /* ]] || _s=$_d/$_s; done
 _HERE=$(cd -P "$(dirname "$_s")" && pwd)
 for _c in "$_HERE/compat.sh" "$_HERE/../../agy-subagent/scripts/compat.sh"; do [[ -f $_c ]] && { source "$_c"; break; }; done
 declare -F agy_require >/dev/null && agy_require jq agy   # thiếu thì tự sửa (setup.sh fix -y)
+source "$_HERE/wt.sh" || { echo "agy-sub: thiếu $_HERE/wt.sh (chạy agy-setup fix)" >&2; exit 2; }   # worktree -W: không commit, không branch
 set -uo pipefail
 
 MODEL="gemini-3.8-flash-high"
@@ -69,31 +70,18 @@ workdir=$(cd "$workdir" && pwd)
 
 id="$name-$(date +%H%M%S)-$RANDOM"
 jd="$JOBS/$id"; mkdir -p "$jd"
-branch="" wtdir="" repo="" base=""
+wtdir="" repo="" base=""
 [[ $carry -eq 1 && $wt -ne 1 ]] && { echo "agy-sub: -C cần -W" >&2; exit 2; }
 
 if [[ $wt -eq 1 ]]; then
   repo=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || { echo "agy-sub: -W cần workdir là git repo" >&2; exit 2; }
   rel=$(git -C "$workdir" rev-parse --show-prefix)
-  branch="agy/$id"; wtdir="$repo/../.agy-wt/$(basename "$repo")-$id"
-  mkdir -p "$(dirname "$wtdir")"
-  git -C "$repo" worktree add -q -b "$branch" "$wtdir" HEAD || { echo "agy-sub: tạo worktree thất bại" >&2; exit 2; }
+  wtdir="$repo/../.agy-wt/$(basename "$repo")-$id"
+  base=$(wt_create "$repo" "$wtdir" "$carry") || { echo "agy-sub: tạo worktree thất bại (hoặc mang thay đổi chưa commit sang thất bại)" >&2; exit 2; }
   wtdir=$(cd "$wtdir" && pwd); workdir="$wtdir/$rel"
-  base=$(git -C "$wtdir" rev-parse HEAD)
-  if [[ -n $(git -C "$repo" status --porcelain) ]]; then
-    if [[ $carry -eq 1 ]]; then
-      # Thay đổi tracked (kể cả binary) + file untracked (không bị ignore) sang worktree, rồi chốt thành commit nền.
-      git -C "$repo" diff --binary HEAD | git -C "$wtdir" apply --whitespace=nowarn - || { echo "agy-sub: carry diff thất bại" >&2; exit 2; }
-      git -C "$repo" ls-files -z -o --exclude-standard | while IFS= read -r -d '' f; do mkdir -p "$wtdir/$(dirname "$f")"; cp -a "$repo/$f" "$wtdir/$f"; done
-      git -C "$wtdir" add -A
-      git -C "$wtdir" $(git -C "$wtdir" config user.name >/dev/null || echo "-c user.name=agy -c user.email=agy@local") commit -q -m "wip: carry uncommitted changes into job $id" && base=$(git -C "$wtdir" rev-parse HEAD)
-    else
-      echo "WARN: repo có thay đổi chưa commit, worktree KHÔNG thấy chúng (chỉ thấy HEAD). Dùng -C để mang theo." >&2
-    fi
-  fi
 fi
 
-guard="Ràng buộc: không git push/commit/reset/checkout/branch, không xóa file ngoài phạm vi được giao, không truy cập mạng nội bộ 10.0.0.0/8, không bật process nền (nohup/setsid)."
+guard="Ràng buộc: không tạo commit và không chạy git commit/push/reset/checkout/branch/stash/tag hay đổi git config (agent quản lý tự commit sau khi review), không xóa file ngoài phạm vi được giao, không truy cập mạng nội bộ 10.0.0.0/8, không bật process nền (nohup/setsid)."
 [[ $ro -eq 1 ]] && sbx=1   # -R: guard trong prompt không chặn được gì, nên bắt buộc thêm --sandbox
 [[ $sbx -eq 1 ]] && args_extra=(--sandbox) || args_extra=()
 # -R: chụp trạng thái cây làm việc trước/sau; khác nhau = agy đã vi phạm chế độ chỉ đọc (kiểm tra thật, không dựa vào prompt)
@@ -116,7 +104,7 @@ NAME=$name
 WORKDIR=$workdir
 REPO=$repo
 WORKTREE=$wtdir
-BRANCH=$branch
+BRANCH=
 BASE=$base
 CARRY=$carry
 STARTED=$(date +%s)
@@ -157,15 +145,9 @@ ro_violation=0
 if [[ $ro -eq 1 && $(tree_sig) != "$sig_before" ]]; then ro_violation=1; state="RO_VIOLATION"; fi
 echo "$state" >"$jd/state"
 
-# Worktree: wrapper (không phải agy) commit kết quả lên branch agy/<id>.
+# Worktree: chỉ chụp thay đổi vào index của worktree, không commit (wt.sh). Gộp: agy-ctl wt-merge <job> -m "type(scope): ...".
 diffstat=""
-if [[ -n $wtdir ]]; then
-  if [[ -n $(git -C "$wtdir" status --porcelain) ]]; then
-    git -C "$wtdir" add -A
-    git -C "$wtdir" $(git -C "$wtdir" config user.name >/dev/null || echo "-c user.name=agy -c user.email=agy@local") commit -q -m "wip: agy job $id ($name)" || true
-  fi
-  diffstat=$(git -C "$repo" diff --stat "$base" "$branch" 2>/dev/null | tail -20)
-fi
+[[ -n $wtdir ]] && diffstat=$(wt_diff "$wtdir" "$base" --stat 2>/dev/null | tail -20)
 
 echo "JOB=$id"
 echo "CONVERSATION_ID=${cid:--}"
@@ -174,7 +156,7 @@ if [[ -n $result ]]; then
   echo "TOKENS=$(jq -r '.usage.total_tokens' "$jd/result.json") DURATION=$(jq -r '.duration_seconds|floor' "$jd/result.json")s"
 fi
 echo "RAW=$jd/result.json"
-[[ -n $wtdir ]] && { echo "BRANCH=$branch"; echo "WORKTREE=$wtdir"; echo "DIFFSTAT:"; echo "${diffstat:-  (không có thay đổi)}"; }
+[[ -n $wtdir ]] && { echo "WORKTREE=$wtdir"; echo "DIFFSTAT:"; echo "${diffstat:-  (không có thay đổi)}"; }
 echo "---"
 if [[ -n $result ]]; then
   # agy giữ schema của lượt trước khi resume: chỉ coi là structured nếu lần này có -s

@@ -183,13 +183,13 @@ while ($pendingQueue.Count -gt 0 -or $runningSlots.Count -gt 0) {
             $jobId = "-"
             $tokens = "-"
             $seconds = "-"
-            $branch = "-"
+            $wtPath = "-"
 
             if (Test-Path $outFile) {
                 $outLines = [System.IO.File]::ReadAllLines($outFile)
                 foreach ($ol in $outLines) {
                     if ($ol.StartsWith("JOB=")) { $jobId = $ol.Substring(4).Trim() }
-                    if ($ol.StartsWith("BRANCH=")) { $branch = $ol.Substring(7).Trim() }
+                    if ($ol.StartsWith("WORKTREE=")) { $wtPath = $ol.Substring(9).Trim() }
                 }
             }
 
@@ -208,7 +208,7 @@ while ($pendingQueue.Count -gt 0 -or $runningSlots.Count -gt 0) {
                 Job = $jobId
                 Tokens = $tokens
                 Seconds = $seconds
-                Branch = $branch
+                Worktree = $wtPath
             })
 
             $runningSlots.RemoveAt($i)
@@ -220,17 +220,17 @@ while ($pendingQueue.Count -gt 0 -or $runningSlots.Count -gt 0) {
 $sortedResults = $completedResults | Sort-Object { $_.Id }
 $tsvLines = [System.Collections.Generic.List[string]]::new()
 foreach ($r in $sortedResults) {
-    $tsvLines.Add("$($r.Id)`t$($r.Status)`t$($r.Job)`t$($r.Tokens)`t$($r.Seconds)`t$($r.Branch)")
+    $tsvLines.Add("$($r.Id)`t$($r.Status)`t$($r.Job)`t$($r.Tokens)`t$($r.Seconds)`t$($r.Worktree)")
 }
 [System.IO.File]::WriteAllLines($summaryFile, $tsvLines, [System.Text.Encoding]::UTF8)
 
 # In bảng tổng hợp
-Write-Output ("{0,-20} {1,-12} {2,-25} {3,-10} {4,-10} {5}" -f "ID", "STATUS", "JOB", "TOKENS", "SECONDS", "BRANCH")
+Write-Output ("{0,-20} {1,-12} {2,-25} {3,-10} {4,-10} {5}" -f "ID", "STATUS", "JOB", "TOKENS", "SECONDS", "WORKTREE")
 Write-Output ("-" * 85)
 $hasFailure = $false
 foreach ($r in $sortedResults) {
     if ($r.Status -ne "SUCCESS") { $hasFailure = $true }
-    Write-Output ("{0,-20} {1,-12} {2,-25} {3,-10} {4,-10} {5}" -f $r.Id, $r.Status, $r.Job, $r.Tokens, $r.Seconds, $r.Branch)
+    Write-Output ("{0,-20} {1,-12} {2,-25} {3,-10} {4,-10} {5}" -f $r.Id, $r.Status, $r.Job, $r.Tokens, $r.Seconds, $r.Worktree)
 }
 
 if ($hasFailure) {

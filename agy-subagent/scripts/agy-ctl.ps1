@@ -31,7 +31,7 @@ if (-not (Test-Path $jobsBase)) {
 function Show-Usage {
     @"
 Cách dùng:
-  agy-ctl list                    mọi job (mới nhất cuối): state, tuổi, tên, branch
+  agy-ctl list                    mọi job (mới nhất cuối): state, tuổi, tên, worktree
   agy-ctl status <job>            đang chạy hay xong; số step; bước/ chữ gần nhất
   agy-ctl tail <job> [n=15]       n event gần nhất, dạng rút gọn (theo dõi tiến độ)
   agy-ctl history <job|cid> [n]   transcript đầy đủ của agy (user/model/tool), cắt gọn
@@ -39,10 +39,13 @@ Cách dùng:
   agy-ctl stop <job>|all [-y]     INTERRUPT: kill cả cây tiến trình, đánh dấu STOPPED
   agy-ctl wait <job> [sec=600]    chờ job xong (poll 3s), in state
   agy-ctl gc [days=3] [-y]        dọn job xong cũ hơn N ngày + worktree không có thay đổi
-  agy-ctl wt-list                 worktree agy/* đang tồn tại
-  agy-ctl wt-diff <job>           diff đầy đủ branch agy/<id> so với nơi tách ra
-  agy-ctl wt-merge <job> -m "type(scope): ..." [-m thân] | --no-commit   gộp SQUASH thành một commit mang tên người dùng rồi dọn (job -C: áp diff vào cây làm việc)
-  agy-ctl wt-drop <job>           bỏ worktree + branch (không merge)
+  agy-ctl wt-list                 worktree của các job -W đang tồn tại
+  agy-ctl wt-diff <job> [--stat]  thay đổi job đã làm (so với lúc giao việc)
+  agy-ctl wt-merge <job> -m "type(scope): ..." [-m thân] | --no-commit   [--3way]
+                                  áp thay đổi vào cây làm việc; -m: commit đúng các file đó, một commit mang git
+                                  identity của repo, message Conventional Commits không dấu vết agy/công cụ;
+                                  --no-commit: để agent quản lý tự commit. Job không tạo commit/branch nào
+  agy-ctl wt-drop <job>           bỏ thay đổi, dọn worktree
 "@
 }
 
@@ -169,6 +172,133 @@ function Stop-JobProcess([string]$jobPath) {
     }
 }
 
+# Worktree của job -W: không commit, không branch (giống wt.sh). BASE = tree id lúc giao việc; thay đổi của agy được chụp
+# vào index riêng của worktree (git add -A). wt-merge áp đúng phần đó vào cây làm việc, -m thì commit đúng các file đó
+# bằng git identity của repo. Job tạo trước thay đổi này (branch agy/<id>) vẫn dùng được; dọn thì xoá luôn branch cũ.
+$WtMsgPattern = '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()]+\))?!?: [^ ]'
+
+function Wt-Snap([string]$w) {
+    $ErrorActionPreference = "Continue"
+    git -C $w add -A 2>$null | Out-Null
+}
+
+function Wt-Changed([string]$w, [string]$base) {
+    $ErrorActionPreference = "Continue"
+    Wt-Snap $w
+    git -C $w diff --cached --quiet --no-ext-diff $base 2>$null
+    return ($LASTEXITCODE -ne 0)
+}
+
+function Wt-Files([string]$w, [string]$base) {
+    $ErrorActionPreference = "Continue"
+    Wt-Snap $w
+    return @(git -C $w -c core.quotePath=false diff --cached --name-only --no-renames $base 2>$null | Where-Object { $_ })
+}
+
+function Wt-Diff([string]$w, [string]$base, [string[]]$extra) {
+    $ErrorActionPreference = "Continue"
+    Wt-Snap $w
+    git -C $w -c diff.relative=false diff --cached --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ @extra $base
+}
+
+function Wt-Remove([string]$repo, [string]$w, [string]$branch) {
+    $ErrorActionPreference = "Continue"
+    if ($w -and (Test-Path $w)) { git -C $repo worktree remove --force $w 2>$null | Out-Null }
+    git -C $repo worktree prune 2>$null | Out-Null
+    if ($branch) { git -C $repo branch -D $branch 2>$null | Out-Null }
+}
+
+# Message commit: dòng đầu theo Conventional Commits (AGY_COMMIT_PATTERN để đổi chuẩn), không dấu vết agy/công cụ.
+# Trả "" nếu hợp lệ, không thì lý do.
+function Test-CommitMsg([string]$id, [string[]]$msgs) {
+    if ($msgs.Count -eq 0 -or [string]::IsNullOrWhiteSpace($msgs[0])) { return "thiếu message" }
+    $subj = $msgs[0]; $all = $msgs -join "`n"
+    $pat = if ($env:AGY_COMMIT_PATTERN) { $env:AGY_COMMIT_PATTERN } else { $WtMsgPattern }
+    if ($subj -cnotmatch $pat) { return "dòng đầu không theo chuẩn commit (<type>(<scope>): <mô tả>): `"$subj`"" }
+    if ($subj -imatch '^[a-z]+(\([^()]*\))?!?: *((wip|tmp|temp|fixup!|squash!)( |$)|(update|updates|changes?|misc|stuff|fix|fixes) *$)') { return "mô tả quá chung chung: `"$subj`". Ghi rõ đã đổi gì" }
+    foreach ($bad in @($id, 'agy@local', '(agy subagent)', 'co-authored-by:', 'generated with', 'claude.ai/', 'claude-session', [char]::ConvertFromUtf32(0x1F916))) {
+        if ($bad -and $all.IndexOf($bad, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return "message mang dấu vết công cụ (`"$bad`"); chỉ mô tả thay đổi" }
+    }
+    if ($all -imatch '(?m)(^|[^a-z0-9-])(agy|antigravity)([^a-z0-9-]|$)') { return "message nhắc tới agy/antigravity; chỉ mô tả thay đổi" }
+    return ""
+}
+
+# wt-merge: trả 0 xong (worktree đã dọn), 1 xung đột/commit hỏng (worktree giữ nguyên), 2 tham số/điều kiện sai (chưa đụng gì)
+function Invoke-WtMerge([string]$jp, [string[]]$opts) {
+    $ErrorActionPreference = "Continue"
+    $repo = Read-Meta $jp "REPO"; $base = Read-Meta $jp "BASE"; $w = Read-Meta $jp "WORKTREE"; $b = Read-Meta $jp "BRANCH"
+    $id = Split-Path $jp -Leaf
+    $msgs = @(); $noCommit = $false; $three = $false
+    for ($i = 0; $i -lt $opts.Count; $i++) {
+        if ($opts[$i] -eq "-m") {
+            if ($i + 1 -ge $opts.Count -or [string]::IsNullOrWhiteSpace($opts[$i + 1])) { Write-Output "-m cần message"; return 2 }
+            $msgs += $opts[$i + 1]; $i++
+        } elseif ($opts[$i] -eq "--no-commit") { $noCommit = $true }
+        elseif ($opts[$i] -eq "--3way") { $three = $true }
+        else { Write-Output "tham số lạ: $($opts[$i])"; return 2 }
+    }
+    if ($noCommit -and $msgs.Count -gt 0) { Write-Output "-m và --no-commit không đi cùng nhau"; return 2 }
+    if (-not $noCommit -and $msgs.Count -eq 0) {
+        Write-Output 'wt-merge cần message commit: agy-ctl wt-merge <job> -m "type(scope): việc đã làm" [-m "thân"]  (hoặc --no-commit rồi tự commit)'
+        return 2
+    }
+    if (-not $w -or -not (Test-Path $w)) { Write-Output "worktree không còn: $w"; return 2 }
+    if (-not (Wt-Changed $w $base)) { Write-Output "job không có thay đổi nào"; Wt-Remove $repo $w $b; return 0 }
+    $files = @(Wt-Files $w $base)
+    if (-not $noCommit) {
+        $why = Test-CommitMsg $id $msgs
+        if ($why) { Write-Output "từ chối message: $why"; return 2 }
+        if (-not (git -C $repo config user.name) -or -not (git -C $repo config user.email)) {
+            Write-Output "repo $repo chưa cấu hình git user.name/user.email: commit phải mang tên người dùng"; return 2
+        }
+        $dirty = @(git -C $repo -c core.quotePath=false --literal-pathspecs status --porcelain -- @files 2>$null)
+        if ($dirty.Count -gt 0) {
+            Write-Output "các file sau đang có thay đổi chưa commit của bạn, commit tự động sẽ trộn vào:"
+            $dirty | ForEach-Object { Write-Output "  $_" }
+            Write-Output "→ chạy lại với --no-commit, rồi tự commit đúng phần cần commit"
+            return 2
+        }
+    }
+    # patch ghi thẳng ra file (--output): không đi qua pipeline PowerShell, giữ nguyên byte của file binary
+    $patch = [System.IO.Path]::GetTempFileName()
+    git -C $w -c diff.relative=false diff --cached --binary --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ "--output=$patch" $base 2>$null
+    if ($three) {
+        $err = git -C $repo apply --3way --whitespace=nowarn $patch 2>&1; $rc = $LASTEXITCODE
+        if ($rc -ne 0 -and (git -C $repo diff --name-only --diff-filter=U)) { $rc = 2 }
+    } else {
+        $err = git -C $repo apply --check --whitespace=nowarn $patch 2>&1
+        if ($LASTEXITCODE -eq 0) { $err = git -C $repo apply --whitespace=nowarn $patch 2>&1; $rc = $LASTEXITCODE } else { $rc = 1 }
+    }
+    Remove-Item $patch -Force -ErrorAction SilentlyContinue
+    if ($rc -eq 2) {
+        Write-Output "CONFLICT: đã gộp 3 chiều vào $repo, các file sau còn marker xung đột (sửa tay rồi git add):"
+        git -C $repo diff --name-only --diff-filter=U | ForEach-Object { Write-Output "  $_" }
+    } elseif ($rc -ne 0) {
+        Write-Output "CONFLICT: không áp gọn được thay đổi của job vào $repo, chưa ghi gì:"
+        @($err) | Select-Object -First 5 | ForEach-Object { Write-Output "  $_" }
+    }
+    if ($rc -ne 0) { Write-Output "worktree giữ nguyên: $w (xem: wt-diff; gộp 3 chiều: thêm --3way; bỏ: wt-drop)"; return 1 }
+    Write-Output "đã áp thay đổi vào cây làm việc của $repo (CHƯA commit):"
+    git -C $repo -c core.quotePath=false --literal-pathspecs status --short -- @files | ForEach-Object { Write-Output "  $_" }
+    if ($noCommit) {
+        Write-Output "COMMIT: chưa có commit nào. Agent quản lý review diff, chạy test, rồi tự commit bằng git identity của người dùng,"
+        Write-Output "        message theo chuẩn commit của repo (Conventional Commits: <type>(<scope>): <mô tả>), không nhắc agy/Claude/AI/id job."
+    } else {
+        # message qua file (-F): tránh lỗi quoting tham số của PowerShell 5.1 với dấu ngoặc kép
+        $msgFile = [System.IO.Path]::GetTempFileName()
+        [System.IO.File]::WriteAllText($msgFile, (($msgs -join "`n`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        git -C $repo --literal-pathspecs add -A -- @files 2>$null | Out-Null
+        git -C $repo --literal-pathspecs commit -q -F $msgFile -- @files
+        $crc = $LASTEXITCODE
+        Remove-Item $msgFile -Force -ErrorAction SilentlyContinue
+        if ($crc -ne 0) { Write-Output "commit thất bại (hook?): thay đổi vẫn nằm trong cây làm việc, chưa commit. Worktree giữ nguyên: $w"; return 1 }
+        Write-Output ("đã commit: " + (git -C $repo log -1 --format='%h %an <%ae>: %s'))
+    }
+    Wt-Remove $repo $w $b
+    Write-Output "đã dọn worktree $w"
+    return 0
+}
+
 switch ($Command.ToLower()) {
     "list" {
         $dirs = Get-ChildItem -Path $jobsBase -Directory -ErrorAction SilentlyContinue | Sort-Object CreationTimeUtc
@@ -179,10 +309,10 @@ switch ($Command.ToLower()) {
                 $st = "STALL?"
             }
             $ageStr = Get-JobAge $jp
-            $branch = Read-Meta $jp "BRANCH"
+            $wtCol = if (Read-Meta $jp "WORKTREE") { "worktree" } else { "-" }
             $phead = Read-Meta $jp "PROMPT_HEAD"
             if ($phead.Length -gt 50) { $phead = $phead.Substring(0, 50) }
-            "{0,-9} {1,-7} {2}  {3}  {4}" -f $st, $ageStr, $d.Name, $branch, $phead
+            "{0,-9} {1,-7} {2}  {3}  {4}" -f $st, $ageStr, $d.Name, $wtCol, $phead
         }
     }
 
@@ -194,10 +324,10 @@ switch ($Command.ToLower()) {
         $ageStr = Get-JobAge $jp
         $cid = Get-CidOf $jp
         $workdir = Read-Meta $jp "WORKDIR"
-        $branch = Read-Meta $jp "BRANCH"
+        $wtdir = Read-Meta $jp "WORKTREE"
 
         Write-Output "JOB=$jobName  STATE=$st  AGE=$ageStr  CID=$cid"
-        Write-Output "WORKDIR=$workdir  BRANCH=$branch"
+        Write-Output "WORKDIR=$workdir  WORKTREE=$wtdir"
 
         if (Test-Alive $jp) {
             $idle = Get-IdleSec $jp
@@ -339,11 +469,10 @@ switch ($Command.ToLower()) {
             Write-Output "(chưa có result — job $jobArg chưa xong hoặc lỗi; dùng status/tail/history)"
         }
 
-        $branch = Read-Meta $jp "BRANCH"
-        $repo = Read-Meta $jp "REPO"
-        if (-not [string]::IsNullOrWhiteSpace($branch) -and -not [string]::IsNullOrWhiteSpace($repo)) {
-            Write-Output "--- DIFFSTAT $branch"
-            git -C $repo diff --stat "HEAD...$branch" 2>$null | Write-Output
+        $wtdir = Read-Meta $jp "WORKTREE"
+        if (-not [string]::IsNullOrWhiteSpace($wtdir) -and (Test-Path $wtdir)) {
+            Write-Output "--- DIFFSTAT $wtdir"
+            Wt-Diff $wtdir (Read-Meta $jp "BASE") @("--stat") | Write-Output
         }
     }
 
@@ -414,9 +543,8 @@ switch ($Command.ToLower()) {
         foreach ($d in $dirs) {
             $jp = $d.FullName
             $w = Read-Meta $jp "WORKTREE"
-            $b = Read-Meta $jp "BRANCH"
             if (-not [string]::IsNullOrWhiteSpace($w) -and (Test-Path $w)) {
-                "{0}  {1}  {2}" -f (Get-JobState $jp), $b, $w
+                "{0}  {1}  {2}" -f (Get-JobState $jp), $d.Name, $w
             }
         }
     }
@@ -424,26 +552,21 @@ switch ($Command.ToLower()) {
     "wt-diff" {
         $jobArg = if ($ArgsList.Count -gt 0) { $ArgsList[0] } else { "" }
         $jp = Resolve-Job $jobArg
-        $repo = Read-Meta $jp "REPO"
-        $base = Read-Meta $jp "BASE"
-        $branch = Read-Meta $jp "BRANCH"
-        if ([string]::IsNullOrWhiteSpace($branch)) {
+        $wtdir = Read-Meta $jp "WORKTREE"
+        if ([string]::IsNullOrWhiteSpace($wtdir)) {
             [Console]::Error.WriteLine("job này không chạy với -W")
             exit 2
         }
-        git -C $repo diff $base $branch
+        if (-not (Test-Path $wtdir)) { [Console]::Error.WriteLine("worktree không còn: $wtdir"); exit 2 }
+        $extra = if ($ArgsList.Count -gt 1) { @($ArgsList[1..($ArgsList.Count - 1)]) } else { @() }
+        Wt-Diff $wtdir (Read-Meta $jp "BASE") $extra
     }
 
     "wt-merge" {
+        # Không merge branch nào, không commit hộ agy. Sự cố 2026-10-15: merge --no-ff kéo commit "agy: ..." + "Merge agy/..." vào 3 MR.
         $jobArg = if ($ArgsList.Count -gt 0) { $ArgsList[0] } else { "" }
         $jp = Resolve-Job $jobArg
-        $repo = Read-Meta $jp "REPO"
-        $base = Read-Meta $jp "BASE"
-        $branch = Read-Meta $jp "BRANCH"
-        $wtdir = Read-Meta $jp "WORKTREE"
-        $carry = Read-Meta $jp "CARRY"
-
-        if ([string]::IsNullOrWhiteSpace($branch)) {
+        if ([string]::IsNullOrWhiteSpace((Read-Meta $jp "WORKTREE"))) {
             [Console]::Error.WriteLine("job này không chạy với -W")
             exit 2
         }
@@ -451,71 +574,23 @@ switch ($Command.ToLower()) {
             [Console]::Error.WriteLine("job còn đang chạy")
             exit 2
         }
-
-        if ($carry -eq "1") {
-            $diffBytes = git -C $repo diff --binary $base $branch 2>$null
-            $diffText = ($diffBytes -join "`n")
-            $diffText | git -C $repo apply --3way --whitespace=nowarn - 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                [Console]::Error.WriteLine("CONFLICT khi áp diff vào cây làm việc của $repo (xem git status, marker). Worktree giữ nguyên: $wtdir")
-                exit 1
-            }
-            Write-Output "đã áp thay đổi của agy vào cây làm việc (chưa commit)"
-        } else {
-            # Một commit, tên người dùng, message rõ ràng (không merge --no-ff kéo commit "agy(...)" + "Merge agy/..." vào branch chung)
-            $margs = @(); $noCommit = $false
-            for ($i = 1; $i -lt $ArgsList.Count; $i++) {
-                if ($ArgsList[$i] -eq "-m" -and $i + 1 -lt $ArgsList.Count) { $margs += @("-m", $ArgsList[$i + 1]); $i++ }
-                elseif ($ArgsList[$i] -eq "--no-commit") { $noCommit = $true }
-                else { [Console]::Error.WriteLine("tham số lạ: $($ArgsList[$i])"); exit 2 }
-            }
-            if (-not $noCommit -and $margs.Count -eq 0) {
-                [Console]::Error.WriteLine('wt-merge cần message commit rõ ràng: agy-ctl wt-merge <job> -m "type(scope): việc đã làm" (hoặc --no-commit)')
-                exit 2
-            }
-            if (-not (git -C $repo config user.name) -or -not (git -C $repo config user.email)) {
-                [Console]::Error.WriteLine("repo $repo chưa cấu hình git user.name/user.email")
-                exit 2
-            }
-            git -C $repo diff --cached --quiet
-            if ($LASTEXITCODE -ne 0) {
-                [Console]::Error.WriteLine("repo $repo đang có thay đổi đã stage: commit hoặc unstage trước")
-                exit 2
-            }
-            git -C $repo merge --squash $branch | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                [Console]::Error.WriteLine("CONFLICT: giải quyết tay trong $repo rồi tự git commit, hoặc git reset --merge")
-                exit 1
-            }
-            git -C $repo diff --cached --quiet
-            if ($LASTEXITCODE -eq 0) { Write-Output "agy không có thay đổi để gộp" }
-            elseif ($noCommit) { Write-Output "đã gộp vào index (chưa commit)" }
-            else {
-                git -C $repo commit -q @margs
-                if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("commit thất bại"); exit 1 }
-                Write-Output ("đã commit: " + (git -C $repo log -1 --format='%h %an: %s'))
-            }
-        }
-
-        git -C $repo worktree remove --force $wtdir 2>$null | Out-Null
-        git -C $repo branch -D $branch 2>$null | Out-Null
-        Write-Output "đã dọn $branch"
+        $opts = if ($ArgsList.Count -gt 1) { @($ArgsList[1..($ArgsList.Count - 1)]) } else { @() }
+        $out = @(Invoke-WtMerge $jp $opts)
+        $rc = $out[-1]
+        if ($out.Count -gt 1) { $out[0..($out.Count - 2)] | ForEach-Object { Write-Output $_ } }
+        exit $rc
     }
 
     "wt-drop" {
         $jobArg = if ($ArgsList.Count -gt 0) { $ArgsList[0] } else { "" }
         $jp = Resolve-Job $jobArg
-        $repo = Read-Meta $jp "REPO"
-        $branch = Read-Meta $jp "BRANCH"
         $wtdir = Read-Meta $jp "WORKTREE"
-
-        if ([string]::IsNullOrWhiteSpace($branch)) {
+        if ([string]::IsNullOrWhiteSpace($wtdir)) {
             [Console]::Error.WriteLine("job này không chạy với -W")
             exit 2
         }
-        git -C $repo worktree remove --force $wtdir 2>$null | Out-Null
-        git -C $repo branch -D $branch 2>$null | Out-Null
-        Write-Output "đã bỏ $branch"
+        Wt-Remove (Read-Meta $jp "REPO") $wtdir (Read-Meta $jp "BRANCH")
+        Write-Output "đã bỏ thay đổi của $(Split-Path $jp -Leaf), dọn worktree $wtdir"
     }
 
     "gc" {
@@ -550,21 +625,24 @@ switch ($Command.ToLower()) {
             $r = Read-Meta $jp "REPO"
             $base = Read-Meta $jp "BASE"
 
-            if (-not [string]::IsNullOrWhiteSpace($b) -and (Test-Path $w)) {
-                $headRev = (git -C $r rev-parse $b 2>$null)
+            $hasWt = -not [string]::IsNullOrWhiteSpace($w) -and (Test-Path $w)
+            if ($hasWt -and (Wt-Changed $w $base)) {
+                Write-Output "GIỮ   $($d.Name)  (worktree còn thay đổi chưa áp: wt-merge hoặc wt-drop)"
+                $keep++
+                continue
+            }
+            if (-not [string]::IsNullOrWhiteSpace($b)) {
+                $ErrorActionPreference = "Continue"
+                $headRev = (git -C $r rev-parse -q --verify $b 2>$null)
+                $ErrorActionPreference = "Stop"
                 if ($headRev -and $headRev.Trim() -ne $base) {
-                    Write-Output "GIỮ   $($d.Name)  ($b có thay đổi chưa merge: wt-merge hoặc wt-drop)"
+                    Write-Output "GIỮ   $($d.Name)  (branch kiểu cũ $b còn commit chưa gộp: git -C $r diff $base $b; bỏ: git -C $r branch -D $b)"
                     $keep++
                     continue
                 }
-                Write-Output "DỌN   $($d.Name)  + worktree rỗng $w"
-                if ($yes) {
-                    git -C $r worktree remove --force $w 2>$null | Out-Null
-                    git -C $r branch -D $b 2>$null | Out-Null
-                }
-            } else {
-                Write-Output "DỌN   $($d.Name)  ($st)"
             }
+            if ($hasWt) { Write-Output "DỌN   $($d.Name)  + worktree rỗng $w" } else { Write-Output "DỌN   $($d.Name)  ($st)" }
+            if ($yes -and $r -and (Test-Path $r)) { Wt-Remove $r $w $b }
 
             $del++
             if ($yes) {

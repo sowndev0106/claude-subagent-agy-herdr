@@ -37,11 +37,12 @@ agy-hd fan -i $SCRATCH/tasks -o $SCRATCH/results -j 3 -d /path/to/repo -R       
    - Mỗi job DONE: kiểm chứng, rồi đóng tab (`wt-merge`/`wt-drop`, đều tự đóng tab, hoặc `agy-hd close <job>`).
    - Mọi job DONE thì `CronDelete` lịch.
    - Xem tay: `agy-hd ps`, `agy-hd status <job>`, `agy-hd logs <job>`, `tail ~/.cache/agy-hd/events.log`.
-   - Job id = `a-<task>-xxxx`. Cột 3 của `results/SUMMARY.tsv` (task, trạng thái, job, workspace, branch) chỉ có khi job đã xong.
+   - Job id = `a-<task>-xxxx`. Cột 3 của `results/SUMMARY.tsv` (task, trạng thái, job, workspace, worktree) chỉ có khi job đã xong.
 6. **Kiểm chứng và gộp (với `-W`):** mỗi task `agy-hd wt-diff <job>`, đối chiếu với phạm vi đã giao,
    rồi `wt-merge <job> -m "type(scope): <thay đổi thật>"` lần lượt từng task đạt (mỗi task thành MỘT commit mang
-   tên người dùng, không có commit `agy:`/`Merge agy/`; tự đóng workspace + dọn worktree); `wt-drop` task
-   đi quá phạm vi. Chạy test toàn bộ **một lần** sau khi merge hết.
+   git identity của repo, đúng Conventional Commits; job không tạo commit/branch nào), hoặc `--no-commit` từng task
+   rồi tự commit một lần. Cả hai tự đóng workspace + dọn worktree. Chuẩn commit: skill agy-subagent, mục Worktree.
+   `wt-drop` task đi quá phạm vi. Chạy test toàn bộ **một lần** sau khi merge hết.
 7. **Task sai/BLOCKED/TIMEOUT:** `agy-hd prompt <job> "Sửa: …"` (cùng ngữ cảnh), hoặc `interrupt` rồi `resume`.
 
 ## Cờ `agy-hd fan`

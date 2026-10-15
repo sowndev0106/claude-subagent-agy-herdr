@@ -13,7 +13,8 @@ A toolkit and agent skills suite enabling **Claude Code** to orchestrate **Antig
 * **`agy`** operates independently with high velocity, running with `--dangerously-skip-permissions` to swiftly execute well-scoped instructions.
 * **1 Claude Code Session = 1 `herdr` Workspace** (e.g., `#132 Evaluate suggestion engine`).
 * **1 Subagent = 1 Tab** inside that workspace (tab label matches job ID: `a-<task>-xxxx`).
-* **Source Isolation**: The optional `-W` flag provisions an isolated Git worktree (branch `agy/<id>`), preventing uncommitted changes and conflicts on the main working tree.
+* **Source Isolation**: The optional `-W` flag provisions an isolated, detached Git worktree (no branch), preventing uncommitted changes and conflicts on the main working tree.
+* **Clean history**: jobs never create commits, not even internal ones. `wt-merge <job> -m "type(scope): ..."` lands exactly the job's files as one commit under the repo's own git identity, after checking the message follows Conventional Commits and carries no agy/tool traces (job id, `agy@local`, Co-Authored-By, ...). `wt-merge <job> --no-commit` leaves the changes uncommitted so the managing agent commits them itself.
 
 ---
 
@@ -46,7 +47,7 @@ Subagents can occasionally stall or hit API rate limits (such as Google Antigrav
 2. **Claude Code Cron Check-in**:
    * During async execution (`start -A` or `fan`), Claude Code schedules a 1-minute check-in to query `agy-hd tick --show` and react accordingly:
      * `RUNNING`: Actively working; continue monitoring.
-     * `DONE`: Task completed; verify diffs and tests, then close tab (`agy-hd close` or `wt-merge`).
+     * `DONE`: Task completed; verify diffs and tests, then close tab (`agy-hd close` or `wt-merge -m`).
      * `QUOTA`: Automatically undergoing recovery by scheduler.
      * `STOPPED` / `STALL`: Process halted or hung; inspect logs, interrupt, or resume.
      * `BLOCKED`: Awaiting interactive human input.
@@ -104,7 +105,7 @@ or `agy-p export <profile> file.tgz` / `agy-p import file.tgz` (the file contain
 | `accounts` | Accounts, quota and the jobs (running / done) on each |
 | `tick` (timer, every minute) | `QUOTA` → restart on another account with quota, resume the same conversation |
 
-* **Auto-pick** (`agy-p pick`): the default profile while it has ≥ 20 % Gemini quota and < 2 open jobs, otherwise the account with the best `min(weekly, 5h) / (1 + open jobs)`; accounts under 5 % are skipped and profiles sharing an email count once.
+* **Auto-pick** (`agy-p pick`): the default profile while it has ≥ 20 % Gemini quota and < 2 open jobs, otherwise the account with the best `min(weekly, 5h) / (1 + open jobs)`; accounts under 10 % are used only when no account reaches 10 %, and profiles sharing an email count once.
 * agy's built-in `invoke_subagent` and nested `agy` calls inside a job run on the job's account (a PATH shim pins `--gemini_dir`). agy-hd waits while the status bar shows `N subagent(s)`, so a job waiting on a subagent is not reported as done.
 * Per-job lock: the tick and manual `park` / `resume` / `restart` / `switch` / `interrupt` / `close` never change the same job at the same time.
 * How it works: agy stores the token in a file only when an SSH variable is set, otherwise in one gnome-keyring entry shared by every profile. agy-p always sets `SSH_CONNECTION` and passes agy's hidden `--gemini_dir` flag. Re-check after `agy update` with `agy-p doctor`.
@@ -119,6 +120,14 @@ or `agy-p export <profile> file.tgz` / `agy-p import file.tgz` (the file contain
 | `agy-accounts/tests/e2e-accounts.sh`: `-u`, auto-pick, `fan` spread, subagent wait, quota failover with the same conversation, `switch`, immediate park/resume, nested agy, `agy-sub -u`, `accounts` | 10 / 10 PASS; after the final review fixes 9 / 10, the one failure was the test's own D7 check (fixed) |
 | Cross-account `switch`, `fan` split over two accounts, quota failover to another account | PASS (2026-10-09, after the review fixes) |
 | Final review fix checks: 14 `agy-p` / `login.py` cases, 7 `agy-hd` / `agy-sub` cases | all PASS |
+
+### Tests (2026-10-15, `-W` worktrees without commits)
+
+| Suite | Result |
+|---|---|
+| `selftest-wt.sh` (offline, no agy or herdr): carry, conflict, hostile git config, legacy branch, worker self-commit, commit and refusal rules | 60 / 60 PASS |
+| `selftest.sh` (agy-sub / agy-ctl / agy-fan, real agy) | 32 / 32 PASS |
+| `selftest-hd.sh ro followup carry conflict interrupt fan gc` (real agy, private herdr session) | 39 / 43 PASS; the 4 failures (ACCESS attach line, workspace label and tab name in `ro`, the `sleep 313` probe in `interrupt`) fail the same way on the previous commit |
 
 ---
 
@@ -208,8 +217,10 @@ agy-hd open <job-id>
 # Review diff once done
 agy-hd wt-diff <job-id>
 
-# Merge changes into current branch and close tab
-agy-hd wt-merge <job-id>
+# Land the job's files as one commit under your own git identity, then close the tab
+agy-hd wt-merge <job-id> -m "fix(parser): handle empty input"
+# ...or apply without committing and commit yourself
+agy-hd wt-merge <job-id> --no-commit
 ```
 
 ### 3. Run parallel tasks (`fan-out`)
@@ -243,7 +254,9 @@ claude-subagent-agy-herdr/
 │   │   ├── agy-sub.sh         # Headless single-job runner
 │   │   ├── agy-fan.sh         # Headless parallel runner
 │   │   ├── agy-ctl.sh         # Job lifecycle CLI controller
+│   │   ├── wt.sh              # -W worktrees without commits/branches; wt-merge + commit checks
 │   │   ├── *.ps1 / *.cmd      # Windows runners (agy-sub, agy-ctl, agy-fan)
+│   │   ├── selftest-wt.sh     # Offline tests for wt.sh (no agy, no herdr)
 │   │   ├── selftest.sh        # Headless automated test suite
 │   │   └── selftest-hd.sh     # Herdr integration automated test suite
 │   └── systemd/

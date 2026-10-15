@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Điều khiển các job agy: xem trạng thái, interrupt, đọc history/summary, quản lý worktree.
 #
-#   agy-ctl.sh list                    mọi job (mới nhất cuối): state, tuổi, tên, branch
+#   agy-ctl.sh list                    mọi job (mới nhất cuối): state, tuổi, tên, worktree
 #   agy-ctl.sh status <job>            đang chạy hay xong; số step; bước/ chữ gần nhất
 #   agy-ctl.sh tail <job> [n=15]       n event gần nhất, dạng rút gọn (theo dõi tiến độ)
 #   agy-ctl.sh history <job|cid> [n]   transcript đầy đủ của agy (user/model/tool), cắt gọn
@@ -9,10 +9,13 @@
 #   agy-ctl.sh stop <job>|all -y       INTERRUPT: kill cả cây tiến trình, đánh dấu STOPPED (all cần -y, vì registry dùng chung mọi phiên)
 #   agy-ctl.sh wait <job> [sec=600]    chờ job xong (poll 3s), in state
 #   agy-ctl.sh gc [days=3] [-y]        dọn job xong cũ hơn N ngày + worktree không có thay đổi (mặc định chỉ liệt kê)
-#   agy-ctl.sh wt-list                 worktree agy/* đang tồn tại
-#   agy-ctl.sh wt-diff <job>           diff đầy đủ branch agy/<id> so với nơi tách ra
-#   agy-ctl.sh wt-merge <job> -m "type(scope): ..." [-m thân] | --no-commit   gộp SQUASH thành một commit mang tên người dùng rồi dọn (job -C: áp diff vào cây làm việc, không commit)
-#   agy-ctl.sh wt-drop <job>           bỏ worktree + branch (không merge)
+#   agy-ctl.sh wt-list                 worktree của các job -W đang tồn tại
+#   agy-ctl.sh wt-diff <job> [--stat]  thay đổi job đã làm (so với lúc giao việc)
+#   agy-ctl.sh wt-merge <job> -m "type(scope): ..." [-m thân] | --no-commit   [--3way]
+#                                      áp thay đổi vào cây làm việc; -m: commit đúng các file đó, một commit mang git
+#                                      identity của repo, message Conventional Commits không dấu vết agy/công cụ;
+#                                      --no-commit: để agent quản lý tự commit. Job không tạo commit/branch nào
+#   agy-ctl.sh wt-drop <job>           bỏ thay đổi, dọn worktree
 #
 # <job> là id đầy đủ hoặc tiền tố/tên; khớp nhiều thì lấy job mới nhất.
 # Nạp lớp tương thích (macOS/BSD/busybox, bash >= 4.4): tìm thư mục thật của script qua symlink mà không cần readlink -f
@@ -20,6 +23,7 @@ _s=$0; while [[ -L $_s ]]; do _d=$(cd -P "$(dirname "$_s")" && pwd); _s=$(readli
 _HERE=$(cd -P "$(dirname "$_s")" && pwd)
 for _c in "$_HERE/compat.sh" "$_HERE/../../agy-subagent/scripts/compat.sh"; do [[ -f $_c ]] && { source "$_c"; break; }; done
 declare -F agy_require >/dev/null && agy_require jq   # thiếu thì tự sửa (setup.sh fix -y)
+source "$_HERE/wt.sh" || { echo "agy-ctl: thiếu $_HERE/wt.sh (chạy agy-setup fix)" >&2; exit 2; }   # worktree -W: không commit, không branch
 set -uo pipefail
 JOBS="${AGY_JOBS:-$HOME/.cache/agy-jobs}"
 BRAIN="$HOME/.gemini/antigravity-cli/brain"
@@ -54,12 +58,12 @@ case $cmd in
 list)
   for d in $(ls -1dt "$JOBS"/*/ 2>/dev/null | tac); do d=${d%/}
     st=$(jstate "$d"); [[ $st == RUNNING && $(idle "$d") -gt $STALL ]] && st=STALL?
-    printf '%-9s %-7s %s  %s  %s\n' "$st" "$(age "$d")" "$(basename "$d")" "$(meta "$d" BRANCH)" "$(p=$(meta "$d" PROMPT_HEAD); echo "${p:0:50}")"
+    printf '%-9s %-7s %s  %s  %s\n' "$st" "$(age "$d")" "$(basename "$d")" "$(w=$(meta "$d" WORKTREE); [[ -n $w ]] && echo worktree || echo -)" "$(p=$(meta "$d" PROMPT_HEAD); echo "${p:0:50}")"
   done ;;
 status)
   d=$(resolve "${1:?job}"); ev=$d/events.jsonl
   echo "JOB=$(basename "$d")  STATE=$(jstate "$d")  AGE=$(age "$d")  CID=$(cid_of "$d")"
-  echo "WORKDIR=$(meta "$d" WORKDIR)  BRANCH=$(meta "$d" BRANCH)"
+  echo "WORKDIR=$(meta "$d" WORKDIR)  WORKTREE=$(meta "$d" WORKTREE)"
   if alive "$d"; then i=$(idle "$d"); echo "IDLE=${i}s$([[ $i -gt $STALL ]] && echo '  ⚠ STALL: không có event mới > '"$STALL"'s (xem history, cân nhắc stop)')"; fi
   if [[ -s $ev ]]; then
     echo "STEPS=$(jq -r 'select(.event=="step_update").step_update.step_index' "$ev" | sort -un | tail -1)"
@@ -85,8 +89,8 @@ summary)
     jq -r '"TOKENS=\(.usage.total_tokens) TURNS=\(.num_turns) DURATION=\(.duration_seconds|floor)s"' "$d/result.json"
     echo "---"; jq -r '.response' "$d/result.json"
   else echo "(chưa có result — job ${1} chưa xong hoặc lỗi; dùng status/tail/history)"; fi
-  b=$(meta "$d" BRANCH); r=$(meta "$d" REPO)
-  [[ -n $b ]] && { echo "--- DIFFSTAT $b"; git -C "$r" diff --stat "HEAD...$b" 2>/dev/null; } ;;
+  w=$(meta "$d" WORKTREE)
+  [[ -n $w && -d $w ]] && { echo "--- DIFFSTAT $w"; wt_diff "$w" "$(meta "$d" BASE)" --stat 2>/dev/null; } ;;
 stop)
   k=${1:?job|all}; targets=()
   if [[ $k == all ]]; then for d in "$JOBS"/*/; do alive "${d%/}" && targets+=("${d%/}"); done
@@ -105,35 +109,23 @@ wait)
   while alive "$d"; do (( $(date +%s) - t0 > lim )) && { echo "RUNNING (hết ${lim}s chờ)"; exit 1; }; sleep 3; done
   jstate "$d" ;;
 wt-list)
-  for d in "$JOBS"/*/; do d=${d%/}; w=$(meta "$d" WORKTREE); [[ -n $w && -d $w ]] && echo "$(jstate "$d")  $(meta "$d" BRANCH)  $w"; done ;;
+  for d in "$JOBS"/*/; do d=${d%/}; w=$(meta "$d" WORKTREE); [[ -n $w && -d $w ]] && echo "$(jstate "$d")  $(basename "$d")  $w"; done ;;
 wt-diff)
-  d=$(resolve "${1:?job}"); git -C "$(meta "$d" REPO)" diff "$(meta "$d" BASE)" "$(meta "$d" BRANCH)" ;;
+  d=$(resolve "${1:?job}"); shift; w=$(meta "$d" WORKTREE)
+  [[ -n $w ]] || die "job này không chạy với -W"; [[ -d $w ]] || die "worktree không còn: $w"
+  wt_diff "$w" "$(meta "$d" BASE)" "$@" ;;
 wt-merge)
-  d=$(resolve "${1:?job}"); r=$(meta "$d" REPO); b=$(meta "$d" BRANCH); w=$(meta "$d" WORKTREE); base=$(meta "$d" BASE)
-  [[ -n $b ]] || die "job này không chạy với -W"
+  # Không merge branch nào, không commit hộ agy: áp thay đổi vào cây làm việc; -m thì commit đúng các file đó bằng git
+  # identity của repo (wt.sh). Sự cố 2026-10-15: merge --no-ff kéo commit "agy: ..." + "Merge agy/..." vào 3 MR.
+  d=$(resolve "${1:?job}"); shift; w=$(meta "$d" WORKTREE)
+  [[ -n $w ]] || die "job này không chạy với -W"
   [[ $(jstate "$d") == RUNNING ]] && die "job còn đang chạy"
-  shift; nocommit=0; margs=(); while (( $# )); do case $1 in -m) margs+=(-m "${2:?-m cần message}"); shift 2;; --no-commit) nocommit=1; shift;; *) die "tham số lạ: $1";; esac; done
-  if [[ $(meta "$d" CARRY) == 1 ]]; then
-    # Job -C: nhánh chứa commit "carry" (thay đổi chưa commit của repo), merge sẽ đè lên cây bẩn.
-    # Chỉ áp phần agy làm thêm (BASE..branch) vào cây làm việc, để nguyên dạng chưa commit.
-    git -C "$r" diff --binary "$base" "$b" | git -C "$r" apply --3way --whitespace=nowarn - \
-      || { echo "CONFLICT khi áp diff vào cây làm việc của $r (xem git status, file *.rej / marker). Worktree giữ nguyên: $w"; exit 1; }
-    echo "đã áp thay đổi của agy vào cây làm việc (chưa commit)"
-  else
-    # Một commit, tên người dùng, message rõ ràng (không merge --no-ff kéo commit "agy(...)" + "Merge agy/..." vào branch chung)
-    (( nocommit )) || (( ${#margs[@]} )) || die 'wt-merge cần message commit rõ ràng: wt-merge <job> -m "type(scope): việc đã làm" (hoặc --no-commit)'
-    git -C "$r" config user.name >/dev/null && git -C "$r" config user.email >/dev/null || die "repo $r chưa cấu hình git user.name/user.email"
-    git -C "$r" diff --cached --quiet || die "repo $r đang có thay đổi đã stage: commit hoặc unstage trước"
-    git -C "$r" merge --squash "$b" >/dev/null || { echo "CONFLICT: giải quyết tay trong $r rồi tự git commit, hoặc git reset --merge"; exit 1; }
-    if git -C "$r" diff --cached --quiet; then echo "agy không có thay đổi để gộp"
-    elif (( nocommit )); then echo "đã gộp vào index (chưa commit)"
-    else git -C "$r" commit -q "${margs[@]}" && echo "đã commit: $(git -C "$r" log -1 --format='%h %an: %s')"; fi
-  fi
-  git -C "$r" worktree remove --force "$w" && git -C "$r" branch -D "$b" >/dev/null && echo "đã dọn $b" ;;
+  wt_merge "$w" "$(meta "$d" BASE)" "$(meta "$d" REPO)" "$(basename "$d")" "$(meta "$d" BRANCH)" "$@"; rc=$?
+  (( rc == 2 )) && exit 2; exit $rc ;;
 wt-drop)
-  d=$(resolve "${1:?job}"); r=$(meta "$d" REPO); b=$(meta "$d" BRANCH); w=$(meta "$d" WORKTREE)
-  [[ -n $b ]] || die "job này không chạy với -W"
-  git -C "$r" worktree remove --force "$w"; git -C "$r" branch -D "$b"; echo "đã bỏ $b" ;;
+  d=$(resolve "${1:?job}"); w=$(meta "$d" WORKTREE)
+  [[ -n $w ]] || die "job này không chạy với -W"
+  wt_remove "$(meta "$d" REPO)" "$w" "$(meta "$d" BRANCH)"; echo "đã bỏ thay đổi của $(basename "$d"), dọn worktree $w" ;;
 gc)
   days=3; yes=0; for a in "$@"; do [[ $a == -y ]] && yes=1 || days=$a; done
   now=$(date +%s); keep=0; del=0
@@ -141,16 +133,15 @@ gc)
     st=$(jstate "$d"); [[ $st == DEAD || $st == RUNNING ]] && [[ -f $d/pid ]] && continue
     (( now - $(meta "$d" STARTED) < days*86400 )) && continue
     b=$(meta "$d" BRANCH); w=$(meta "$d" WORKTREE); r=$(meta "$d" REPO)
-    if [[ -n $b && -d $w ]]; then
-      # worktree còn tồn tại: chỉ dọn khi agy không để lại thay đổi nào (branch == BASE) hoặc đã bị bỏ
-      if [[ $(git -C "$r" rev-parse "$b" 2>/dev/null) != $(meta "$d" BASE) ]]; then
-        echo "GIỮ   $(basename "$d")  ($b có thay đổi chưa merge: wt-merge hoặc wt-drop)"; keep=$((keep+1)); continue; fi
-      echo "DỌN   $(basename "$d")  + worktree rỗng $w"
-      [[ $yes -eq 1 ]] && { git -C "$r" worktree remove --force "$w"; git -C "$r" branch -D "$b" >/dev/null; }
-    else echo "DỌN   $(basename "$d")  ($st)"; fi
+    if [[ -n $w && -d $w ]] && wt_changed "$w" "$(meta "$d" BASE)"; then   # worktree còn thay đổi chưa áp: giữ
+      echo "GIỮ   $(basename "$d")  (worktree còn thay đổi chưa áp: wt-merge hoặc wt-drop)"; keep=$((keep+1)); continue; fi
+    if [[ -n $b ]] && git -C "$r" rev-parse -q --verify "$b" >/dev/null && [[ $(git -C "$r" rev-parse "$b") != $(meta "$d" BASE) ]]; then
+      echo "GIỮ   $(basename "$d")  (branch kiểu cũ $b còn commit chưa gộp: git -C $r diff $(meta "$d" BASE) $b; bỏ: git -C $r branch -D $b)"; keep=$((keep+1)); continue; fi
+    if [[ -n $w && -d $w ]]; then echo "DỌN   $(basename "$d")  + worktree rỗng $w"; else echo "DỌN   $(basename "$d")  ($st)"; fi
+    [[ $yes -eq 1 && -n $r && -d $r ]] && wt_remove "$r" "$w" "$b"
     del=$((del+1)); [[ $yes -eq 1 ]] && rm -rf "$d"
   done
   for r in $(for d in "$JOBS"/*/; do meta "${d%/}" REPO; done | sort -u); do [[ -n $r && -d $r ]] && git -C "$r" worktree prune; done
   echo "$del job dọn$([[ $yes -eq 0 ]] && echo ' (chưa xóa, thêm -y)'), $keep job giữ lại" ;;
-*) sed -n '2,21p' "$0"; exit 2 ;;
+*) sed -n '2,/^# <job> là/p' "$0"; exit 2 ;;
 esac

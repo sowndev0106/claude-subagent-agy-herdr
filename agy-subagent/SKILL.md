@@ -61,7 +61,7 @@ Với `fan`, đọc `<results>/ACCESS.txt` (có sớm, từng task một).
 
 ```bash
 agy-hd start -n tên -d /repo -f task.md            # tab mới trong workspace của phiên, sửa thẳng /repo
-agy-hd start -n tên -d /repo -W -f task.md         # + worktree riêng branch agy/<id> (nên dùng khi SỬA code)
+agy-hd start -n tên -d /repo -W -f task.md         # + worktree riêng, không branch, không commit (nên dùng khi SỬA code)
 agy-hd start -n tên -d /repo -W -C -f task.md      # + mang thay đổi CHƯA commit của repo vào worktree
 agy-hd start -n tên -d /repo -R -p "review X"      # chỉ đọc
 agy-hd start -A ...                                # async: không chờ xong, in ACCESS rồi thoát
@@ -130,11 +130,11 @@ người xử lý, nên phiên Claude chỉ bị đánh thức đúng lúc đó.
 Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab lại".
 - Kiểm chứng xong một job DONE thì đóng tab của nó ngay:
   - `agy-hd close <job>`;
-  - với job `-W`: `wt-merge <job>` hoặc `wt-drop <job>`, vì hai lệnh này tự đóng tab.
+  - với job `-W`: `wt-merge <job> -m "type(scope): ..."` hoặc `wt-drop <job>`, vì hai lệnh này tự đóng tab.
   - Đóng tab cuối thì herdr đóng luôn workspace của phiên. Lần start sau sẽ tạo lại cùng nhãn.
 - Đóng tab không mất gì:
   - transcript vẫn còn (`agy-hd result <job>`, `agy-hd logs <job> --transcript`);
-  - worktree vẫn còn (`wt-diff`). `close` commit những thay đổi còn dở trong worktree trước khi đóng.
+  - worktree vẫn còn (`wt-diff`). `close` chụp những thay đổi còn dở vào index của worktree (không commit).
 - **Lưới an toàn:** `tick` (systemd timer, mỗi phút) tự đóng tab của job đã DONE quá `AGY_AUTOCLOSE_MIN` phút (mặc định 15; đặt 0 để tắt), và ghi vào `events.log`. Đừng dựa vào nó: đóng tab ngay sau khi kiểm chứng.
 
 ## Cài đặt, hệ điều hành, tự sửa (skill `agy-setup`)
@@ -182,7 +182,7 @@ Người dùng dặn ngày 2026-10-05: "khi done task subagent thì đóng tab l
 agy không thấy hội thoại. Prompt tự đủ: mục tiêu, **file được sửa**, bối cảnh dán thẳng, tiêu chí
 xong (lệnh test), format báo cáo (template: REFERENCE.md). Mô tả **chính xác** kết quả mong muốn
 (ví dụ nội dung file có xuống dòng cuối không): prompt mơ hồ làm agy mất hàng phút suy diễn.
-Script tự nối ràng buộc cứng (không push/commit/reset, không mạng 10.x, không process nền).
+Script tự nối ràng buộc cứng (không commit/push/reset, không mạng 10.x, không process nền). Commit là việc của Claude Code.
 
 ## Tương tác, theo dõi, interrupt
 
@@ -218,30 +218,39 @@ Script tự nối ràng buộc cứng (không push/commit/reset, không mạng 1
   workdir bạn truyền vào `-d` (hoặc worktree của nó)**, và in dòng `TRUST:` để bạn biết.
 - Agent giữ nguyên workspace sau khi xong để xem log. Dọn bằng `close`, `wt-merge/wt-drop`, hoặc `agy-hd gc`.
 
-## Worktree (`-W`)
+## Worktree (`-W`) và commit
 
-Worktree ở `<repo>/../.agy-wt/<repo>-<id>`, branch `agy/<id>`; wrapper (không phải agy) commit kết quả lên `agy/<id>`.
-Các commit đó chỉ là nháp nội bộ, không bao giờ được vào branch chung.
+Worktree ở `<repo>/../.agy-wt/<repo>-<id>`, **detached, không branch**. Job không tạo commit nào, kể cả wrapper:
+thay đổi của agy nằm ở index riêng của worktree, so với trạng thái lúc giao việc.
 
 ```bash
-agy-hd wt-diff <job>      # xem diff trước khi nhận
-agy-hd wt-merge <job> -m "feat(indexer): accept client interaction events over HTTP" [-m "thân: vì sao, gồm gì"]
-                          # gộp SQUASH thành MỘT commit mang tên người dùng (git config của repo) + đóng workspace + dọn
-                          # (job -C: áp diff vào cây làm việc, không commit)
-agy-hd wt-merge <job> --no-commit   # gộp vào index, Claude tự commit (vd. gộp nhiều job thành một commit)
-agy-hd wt-drop <job>      # bỏ, không merge
+agy-hd wt-diff <job> [--stat|--name-only]   # đọc trước khi nhận
+agy-hd wt-merge <job> -m "fix(search): keep facet order stable" [-m "Thân: vì sao, gồm gì."]
+                          # áp vào cây làm việc + commit ĐÚNG các file của job thành MỘT commit (git identity của repo),
+                          # đóng tab, dọn worktree
+agy-hd wt-merge <job> --no-commit   # chỉ áp, chưa commit (gộp nhiều job rồi tự commit; job -C)
+agy-hd wt-merge <job> -m "..." --3way   # sau CONFLICT: gộp 3 chiều, file xung đột giữ marker
+agy-hd wt-drop <job>      # bỏ thay đổi, dọn worktree
 ```
 
-**Commit phải mang tên người dùng và có message rõ ràng** (người dùng dặn 2026-10-15, sau khi MR ai-hub !192, gateway !92,
-console !72 phải viết lại lịch sử để bỏ 13 commit `agy: a-…` + 11 merge `Merge agy/… (agy subagent)`):
-- `wt-merge` thiếu `-m` (và không có `--no-commit`) thì bị từ chối; message bắt đầu bằng `agy`/`Merge agy`/`wip` cũng bị từ chối.
-- Viết message theo conventional commit bằng tiếng Anh, mô tả thay đổi thật (đọc `wt-diff` trước), không nhắc agy/job id.
-- Không bao giờ `git merge agy/<id>`, cherry-pick hay push nhánh `agy/<id>`: chỉ gộp qua `wt-merge`.
-- Trước khi push, kiểm: `git log --format='%an %ae %s' origin/<base>..HEAD | grep -i agy` phải rỗng.
+**Commit** (người dùng dặn 2026-10-15: commit mang tên người dùng, đúng chuẩn commit, không có gì của agy; trước đó
+MR ai-hub !192, gateway !92, console !72 phải viết lại lịch sử để bỏ 13 commit `agy: a-…` + 11 merge `Merge agy/…`):
+- Một commit = dòng đầu `<type>(<scope>): <thay đổi thật, tiếng Anh>` + thân tuỳ chọn (vì sao, gồm gì); tác giả = git config của repo.
+- `wt-merge` kiểm rồi mới đụng vào repo, sai thì exit 2 và chưa ghi gì:
+  - thiếu cả `-m` lẫn `--no-commit`;
+  - dòng đầu không theo Conventional Commits (repo dùng chuẩn khác: đặt `AGY_COMMIT_PATTERN`), hoặc mô tả kiểu wip/update;
+  - message có agy/antigravity, id job, `agy@local`, Co-Authored-By, "Generated with", `claude.ai`;
+  - repo chưa có `user.name`/`user.email` (không bao giờ dùng tên agy thay);
+  - file job đụng tới đang có thay đổi dở của người dùng: chạy lại với `--no-commit` rồi tự commit đúng phần.
+- `--no-commit`: Claude Code tự `git add <file của job>` + `git commit` theo đúng chuẩn trên.
+- Đọc `wt-diff --stat` trước khi `-m`: file rác agy tạo mà repo không ignore (`__pycache__`, test nháp) cũng vào commit.
+- Trước khi push: `git log --format='%an %ae %s%n%b' origin/<base>..HEAD | grep -iE 'agy|co-authored|claude'` phải rỗng.
 
-Worktree tách từ **HEAD**: thay đổi chưa commit KHÔNG vào worktree trừ khi dùng `-C`. Conflict khi
-merge: script dừng và báo, Claude Code giải tay rồi tự `git commit -m "type(scope): ..."` (hoặc `git reset --merge` để bỏ).
-Index đang có thay đổi đã stage thì `wt-merge` từ chối, để commit gộp chỉ chứa việc của agy. Dọn job cũ: `agy-hd gc [ngày=3] [-y]`.
+Conflict: `wt-merge` không ghi gì, in CONFLICT, giữ worktree. Thêm `--3way` để gộp 3 chiều (sửa marker tay rồi tự commit),
+hoặc tự áp lại từ `wt-diff`. Job tạo trước 2026-10-15 (branch `agy/<id>` có commit `agy:`/`wip:`) vẫn `wt-diff`/`wt-merge`
+được; `wt-merge`/`wt-drop`/`gc -y` xoá luôn branch đó. Không `git merge`, cherry-pick hay push `agy/<id>`.
+
+Worktree tách từ **HEAD**: thay đổi chưa commit KHÔNG vào worktree trừ khi dùng `-C`. Dọn job cũ: `agy-hd gc [ngày=3] [-y]`.
 
 Song song nhiều task: [agy-parallel](../agy-parallel/SKILL.md).
 
