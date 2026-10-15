@@ -15,6 +15,7 @@ agy tự refresh. Skills/plugins/MCP và **hội thoại dùng chung** mọi pro
 agy-p ls                      # profile + email, * = mặc định
 agy-p usage                   # quota Gemini/Claude tuần + 5 giờ của từng account (~6 s, chạy song song)
 agy-p dash                    # trang HTML trực quan (mở trình duyệt): quota từng account, account mặc định, account job mới sẽ dùng
+agy-p bar                     # mở widget menu bar trên macOS xem quota realtime (hoặc agy-p widget)
 agy-p default work            # đổi account mặc định (chỉ áp cho lần chạy MỚI)
 agy-p work -p "..."           # chạy agy bằng account đó
 agy-hd start -u work …        # job agy-hd trên account đó; bỏ -u = tự chọn (skill agy-subagent)
@@ -22,15 +23,16 @@ agy-hd start -u work …        # job agy-hd trên account đó; bỏ -u = tự 
 
 Người dùng muốn "xem limit" / "dashboard": chạy `agy-p dash --no-open --fragment <scratchpad>/agy-quota-board.html`
 rồi đăng file fragment bằng Artifact (cùng đường dẫn để giữ URL); bản trên máy ở `~/.agy-profiles/dashboard.html`.
+Người dùng muốn xem quota trên macOS Menu Bar realtime: chạy `agy-p bar` (hoặc `AgyBar.app` trong `~/Applications`).
 
 ## Skill theo việc
 
 - **agy-login**: đăng nhập (máy này, máy khác qua ssh), relogin, chuyển account giữa các máy.
-- **agy-quota**: xem limit (dashboard, `top`, `usage`, `whoami`).
+- **agy-quota**: xem limit (dashboard, widget menubar macOS `agy-p bar`, `top`, `usage`, `whoami`).
 - **agy-switch**: đổi account (mặc định, terminal, một job agy-hd, tự động theo quota).
 
 Lệnh đủ bộ (`agy-p help` để xem): `help add code ls usage dash default switch use whoami best pick env email rename
-relogin rm doctor top export import remote completion`. Chạy trên Linux, macOS, WSL (lớp tương thích `compat.sh`;
+relogin rm doctor top bar widget export import remote completion`. Chạy trên Linux, macOS, WSL (lớp tương thích `compat.sh`;
 cài/sửa môi trường: skill agy-setup). Windows thuần: dùng trong WSL. agy-hd thêm `-u`, `switch`, `accounts`.
 Có vấn đề thì chạy `agy-p doctor` trước.
 

@@ -157,3 +157,7 @@ if ! _agy_native || ! readlink -f / >/dev/null 2>&1; then
     else command readlink "$@"; fi
   }
 fi
+if ! _agy_has xdg-open && _agy_has open; then
+  xdg-open() { open "$@"; }
+fi
+

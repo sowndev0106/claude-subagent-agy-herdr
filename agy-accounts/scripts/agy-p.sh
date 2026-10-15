@@ -25,6 +25,8 @@
 #   agy-p doctor [--fix]       kiểm tra: agy, cờ ẩn --gemini_dir, shim, từng profile, quota đọc được, agy-hd, lịch tick;
 #                              --fix: tự sửa trước (quyền token, symlink, cờ setup, đăng nhập dở, mặc định hỏng, setup.sh fix -y)
 #   agy-p top [-i giây]        xem quota trực tiếp trong terminal, tự làm mới (Ctrl+C để thoát)
+#   agy-p bar [start|stop|restart|status]   widget trên thanh menubar macOS xem quota realtime
+#   agy-p widget [start|stop|restart|status] như trên (alias của bar)
 #   agy-p export <tên> [file]  đóng gói đăng nhập của profile (CHỨA TOKEN) ra file hoặc stdout
 #   agy-p import <file|-> [tên]  nhận gói đăng nhập (vd từ máy khác); trùng account thì từ chối
 #   agy-p remote <ssh-host> <lệnh agy-p...>   chạy agy-p trên máy khác qua ssh (vd: remote srv add, remote srv usage)
@@ -78,7 +80,7 @@ default_profile() {  # $AGY_PROFILE (dùng nguyên, kể cả khi hỏng: lệnh
   [[ -n $p && -n $(email "$p" 2>/dev/null) ]] || p=main
   echo "$p"
 }
-RESERVED=" main help add code ls usage dash default switch use whoami best pick env email rename relogin rm doctor top export import remote completion "
+RESERVED=" main help add code ls usage dash default switch use whoami best pick env email rename relogin rm doctor top bar widget export import remote completion "
 # tên profile MỚI: hợp lệ và không trùng 'main' hay tên lệnh (agy-p <tên> sẽ bị hiểu thành lệnh)
 new_name_ok() { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $RESERVED != *" $1 "* ]]; }
 need_login() { valid "$1"; [[ -n $(email "$1") ]] || die "profile '$1' chưa có hoặc chưa đăng nhập. Tạo: agy-p add"; }
@@ -377,7 +379,7 @@ if frag: open(frag, "w", encoding="utf-8").write(page)
 open(out, "w", encoding="utf-8").write('<!doctype html>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n' + page)
 EOF
   echo "Dashboard: $out"
-  (( open )) && { xdg-open "$out" >/dev/null 2>&1 & disown 2>/dev/null; } || true
+  (( open )) && { { xdg-open "$out" 2>/dev/null || open "$out" 2>/dev/null; } & disown 2>/dev/null; } || true
 }
 
 keyring_email() {  # account mà `agy` trần dùng ở terminal không có biến SSH (gnome-keyring / Apple Keychain)
@@ -626,7 +628,7 @@ cmd_remote() {
 }
 
 cmd_completion() {
-  local subs="help add code ls usage dash default switch use whoami best pick env email rename relogin rm doctor top export import remote completion"
+  local subs="help add code ls usage dash default switch use whoami best pick env email rename relogin rm doctor top bar widget export import remote completion"
   [[ ${1:-} == zsh ]] && echo 'autoload -U +X bashcompinit 2>/dev/null && bashcompinit'
   cat <<EOF
 _agy_p() {
@@ -635,11 +637,23 @@ _agy_p() {
   if (( COMP_CWORD == 1 )); then COMPREPLY=(\$(compgen -W "$subs \$profs" -- "\$cur")); return; fi
   case \${COMP_WORDS[1]} in
     default|switch|use|rename|relogin|rm|env|email|export|usage|best) COMPREPLY=(\$(compgen -W "\$profs --auto --unset" -- "\$cur")) ;;
+    bar|widget) COMPREPLY=(\$(compgen -W "start stop restart status" -- "\$cur")) ;;
     completion) COMPREPLY=(\$(compgen -W "zsh bash" -- "\$cur")) ;;
   esac
 }
 complete -F _agy_p agy-p
 EOF
+}
+
+cmd_bar() {
+  local sub=${1:-start}
+  local app="$HOME/Applications/AgyBar.app"
+  local bin="$HOME/.local/bin/agy-bar"
+  if [[ ! -d $app || ! -x $bin ]]; then
+    echo "Đang biên dịch AgyBar cho macOS..."
+    "$HERE/agy-bar/build.sh"
+  fi
+  "$bin" "$sub" "${@:2}"
 }
 
 cmd_rm() {
@@ -677,6 +691,7 @@ case ${1:-} in
   relogin) shift; cmd_relogin "$@" ;;
   doctor)  shift; cmd_doctor "$@" ;;
   top)     shift; cmd_top "$@" ;;
+  bar|widget) shift; cmd_bar "$@" ;;
   export)  shift; cmd_export "$@" ;;
   import)  shift; cmd_import "$@" ;;
   remote)  shift; cmd_remote "$@" ;;

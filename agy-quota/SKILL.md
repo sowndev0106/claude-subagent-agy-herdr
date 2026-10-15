@@ -13,6 +13,7 @@ Lệnh nền: `agy-p` (skill agy-accounts). Quota lấy bằng `/usage` của t�
 |---|---|
 | Nhìn trực quan, đẹp | `agy-p dash --no-open --fragment <scratchpad>/agy-quota-board.html`, rồi đăng file đó bằng Artifact (cùng đường dẫn để giữ URL cũ) và đưa link |
 | Mở trên máy họ | `agy-p dash` (mở trình duyệt; file ở `~/.agy-profiles/dashboard.html`) |
+| Xem trực tiếp menubar macOS | `agy-p bar` (hoặc `agy-p widget`, app `~/Applications/AgyBar.app`) xem quota realtime, đổi profile 1-click |
 | Xem liên tục trong terminal | người dùng tự chạy `agy-p top` (`-i 60` làm mới mỗi 60 s, Ctrl+C thoát) |
 | Bảng nhanh trong chat | `agy-p usage` |
 | "Account hiện tại là gì" | `agy-p whoami`: account của agy-p ở terminal đó, account của `agy` trần, quota |

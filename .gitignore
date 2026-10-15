@@ -9,3 +9,7 @@ Thumbs.db
 .cache/
 __pycache__/
 *.tmp
+
+# Build & App artifacts
+*.app/
+AgyBar
