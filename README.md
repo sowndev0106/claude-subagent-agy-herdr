@@ -109,6 +109,8 @@ or `agy-p export <profile> file.tgz` / `agy-p import file.tgz` (the file contain
 * agy's built-in `invoke_subagent` and nested `agy` calls inside a job run on the job's account (a PATH shim pins `--gemini_dir`). agy-hd waits while the status bar shows `N subagent(s)`, so a job waiting on a subagent is not reported as done.
 * Per-job lock: the tick and manual `park` / `resume` / `restart` / `switch` / `interrupt` / `close` never change the same job at the same time.
 * How it works: agy stores the token in a file only when an SSH variable is set, otherwise in one gnome-keyring entry shared by every profile. agy-p always sets `SSH_CONNECTION` and passes agy's hidden `--gemini_dir` flag. Re-check after `agy update` with `agy-p doctor`.
+* Current agy credentials (`token` + `id_token_email`) and legacy `id_token` credentials are both readable. One identity reader is shared by profile selection, quota, hidden login, OS keyring inspection and export/import; agy remains responsible for refreshing tokens. Hidden login answers terminal capability queries before choosing Google OAuth. Existing profile onboarding state is preserved.
+* Offline compatibility checks: `python3 -m unittest discover -s agy-accounts/tests -p 'test_*.py' -v`.
 * Switch the default with `agy-p switch`, not `/logout` + `/login` in `~/.gemini`: another running session refreshes its token and writes the old account back.
 
 ### Tests (2026-10-08/09, real accounts, herdr session `cas`)
