@@ -69,12 +69,8 @@ profiles() {  # main trước, rồi các profile khác theo tên
   local d; for d in "$ROOT"/*/; do [[ -d $d ]] && { d=${d%/}; echo "${d##*/}"; }; done | sort
   return 0
 }
-email() {  # email trong id_token của profile, rỗng nếu chưa đăng nhập
-  [[ -f $(token "$1") ]] || return 0
-  python3 -c '
-import json, base64, sys
-p = json.load(open(sys.argv[1]))["id_token"].split(".")[1]
-print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4))).get("email", ""))' "$(token "$1")" 2>/dev/null || true
+email() {  # current cached identity + legacy JWT, using one reader everywhere
+  python3 "$HERE/auth.py" "$(token "$1")" 2>/dev/null || true
 }
 default_profile() {  # $AGY_PROFILE (dùng nguyên, kể cả khi hỏng: lệnh chạy sẽ báo lỗi), không có thì .default, không có thì main
   if [[ -n ${AGY_PROFILE:-} ]]; then echo "$AGY_PROFILE"; return; fi
@@ -131,7 +127,7 @@ for name in ("jetski_state.pbtxt", "antigravity_state.pbtxt"):
     s, d = os.path.join(src, name), os.path.join(dst, name)
     if not os.path.exists(s): continue
     mine = open(d).read() if os.path.exists(d) else ""
-    if "AGENT_ONBOARDING_STATE_COMPLETED" in mine: continue
+    if "AGENT_ONBOARDING_STATE_COMPLETED" in mine or "post_onboarding" in mine: continue
     body = re.sub(r"(?m)^installation_uuid:.*\n?", "", open(s).read())
     uuid = re.search(r"(?m)^installation_uuid:.*$", mine)
     open(d, "w").write(body + (uuid.group(0) + "\n" if uuid else ""))
@@ -390,19 +386,8 @@ EOF
   (( open )) && { { xdg-open "$out" 2>/dev/null || open "$out" 2>/dev/null; } & disown 2>/dev/null; } || true
 }
 
-keyring_email() {  # account mà `agy` trần dùng ở terminal không có biến SSH (gnome-keyring / Apple Keychain)
-  if [[ $AGY_OS == Darwin ]]; then
-    security find-generic-password -s gemini -a antigravity -w 2>/dev/null | python3 -c '
-import json, base64, sys
-p = json.loads(sys.stdin.read())["id_token"].split(".")[1]
-print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))["email"])' 2>/dev/null || echo "? (không đọc được Keychain)"
-    return 0
-  fi
-  python3 -c '
-import json, base64, secretstorage
-it = next(secretstorage.get_default_collection(secretstorage.dbus_init()).search_items({"service": "gemini", "username": "antigravity"}))
-p = json.loads(it.get_secret().decode())["id_token"].split(".")[1]
-print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))["email"])' 2>/dev/null || echo "? (không đọc được keyring)"
+keyring_email() {  # identity from the local OS credential store
+  python3 "$HERE/auth.py" --keyring "$AGY_OS" 2>/dev/null || echo "? (không đọc được keyring)"
 }
 in_use() {  # có tiến trình agy nào đang chạy bằng profile $1 không
   local p d; d=$(dir "$1")
@@ -513,7 +498,7 @@ cmd_doctor() {
   v=$("$REAL" --version 2>/dev/null | head -1) || true; [[ -n $v ]] && ok "agy $v ($REAL)" || no "không chạy được $REAL --version"
   T=$(mktemp -d)
   v=$(SSH_CONNECTION=agy-doctor timeout 40 "$REAL" --gemini_dir="$T" models </dev/null 2>&1 || true)   # lấy hết output trước (pipefail + grep -q)
-  if grep -qi 'sign in' <<<"$v"; then ok "cờ ẩn --gemini_dir còn tác dụng (thư mục mới → chưa đăng nhập)"
+  if grep -qiE 'sign[ -]?in|not signed in' <<<"$v"; then ok "cờ ẩn --gemini_dir còn tác dụng (thư mục mới → chưa đăng nhập)"
   else no "cờ ẩn --gemini_dir không còn tác dụng (agy đổi sau khi update?): các profile có thể dùng chung một account"; fi
   rm -rf "$T"
   [[ -x $SHIM/agy ]] && ok "shim: $SHIM/agy" || no "thiếu shim $SHIM/agy"
@@ -525,7 +510,7 @@ cmd_doctor() {
     [[ $(file_mode "$t") == 600 ]] || hmm "$p: quyền file token là $(file_mode "$t"), nên là 600"
     if [[ $p != main ]]; then
       [[ -L $(dir "$p")/config ]] || hmm "$p: config/ không phải symlink tới ~/.gemini/config"
-      grep -qs AGENT_ONBOARDING_STATE_COMPLETED "$(dir "$p")/antigravity-cli/jetski_state.pbtxt" || hmm "$p: thiếu cờ đã setup (chạy agy-p $p một lần để chép)"
+      grep -qsE 'AGENT_ONBOARDING_STATE_COMPLETED|post_onboarding' "$(dir "$p")/antigravity-cli/jetski_state.pbtxt" || hmm "$p: chưa có trạng thái setup (chạy agy-p $p một lần để chép)"
     fi
     if [[ -n ${seen[$e]:-} ]]; then hmm "$p: cùng account $e với '${seen[$e]}' (không thêm quota)"; else seen[$e]=$p; fi
     ok "$p: $e"
@@ -607,10 +592,7 @@ cmd_import() {
   if [[ $src == - ]]; then tar -C "$tmp" -xzf -; else tar -C "$tmp" -xzf "$src"; fi
   [[ -f $tmp/agy-p-profile/antigravity-oauth-token && ! -L $tmp/agy-p-profile/antigravity-oauth-token ]] || die "không phải gói của agy-p export"
   [[ ! -L $tmp/agy-p-profile/settings.json ]] || die "gói có symlink: từ chối"
-  e=$(python3 -c '
-import json, base64, sys
-p = json.load(open(sys.argv[1]))["id_token"].split(".")[1]
-print(json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))["email"])' "$tmp/agy-p-profile/antigravity-oauth-token" 2>/dev/null) \
+  e=$(python3 "$HERE/auth.py" "$tmp/agy-p-profile/antigravity-oauth-token") \
     || { rm -rf "$tmp"; die "token trong gói không đọc được"; }
   for q in $(profiles); do [[ $(email "$q") == "$e" ]] && { rm -rf "$tmp"; die "$e đã có ở profile '$q' trên máy này"; }; done
   name=${want:-$(printf '%s' "${e%@*}" | tr -c 'A-Za-z0-9._-' '-')}; valid "$name"

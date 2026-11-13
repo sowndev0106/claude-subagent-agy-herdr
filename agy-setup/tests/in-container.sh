@@ -38,10 +38,9 @@ EOF
 chmod +x $HOME/.local/bin/agy
 P=$HOME/.agy-profiles/work/antigravity-cli; mkdir -p $P
 python3 - "$P/antigravity-oauth-token" <<'EOF'
-import base64, json, sys
-b = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+import json, sys
 tok = {"token": {"access_token": "x", "token_type": "Bearer", "refresh_token": "y", "expiry": "2030-01-01T00:00:00Z"},
-       "auth_method": "consumer", "id_token": b({"alg": "none"}) + "." + b({"email": "work@example.com"}) + ".sig"}
+       "auth_method": "consumer", "id_token_email": "work@example.com"}
 open(sys.argv[1], "w").write(json.dumps(tok))
 EOF
 chmod 600 $P/antigravity-oauth-token; mkdir -p $HOME/.gemini/config $HOME/.gemini/antigravity-cli

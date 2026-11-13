@@ -6,7 +6,8 @@ in link đăng nhập, nhận mã xác thực (gõ vào nếu stdin là terminal
 `agy-p code` ghi vào), chờ agy ghi token rồi tắt agy.
 Thoát 0 = đăng nhập xong, 3 = hết giờ chờ mã, 4 = đăng nhập không thành công.
 """
-import argparse, base64, fcntl, json, os, pty, re, select, signal, struct, sys, termios, time
+import argparse, fcntl, os, pty, re, select, signal, struct, sys, termios, time
+from auth import file_email
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]")
 OSC8 = re.compile(r"\x1b\]8;[^;]*;(https://accounts\.google\.com/[^\x07\x1b]+)(?:\x07|\x1b\\)")
@@ -22,28 +23,49 @@ token_path = os.path.join(args.gemini_dir, "antigravity-cli", "antigravity-oauth
 
 
 def email():
-    try:
-        p = json.load(open(token_path))["id_token"].split(".")[1]
-        return json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4))).get("email", "")
-    except (OSError, ValueError, KeyError, IndexError):
-        return ""
+    return file_email(token_path)
 
 
 pid, fd = pty.fork()
 if pid == 0:
+    os.environ["TERM"] = "xterm-256color"
     fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 4000, 0, 0))
     os.execvp(args.agy, [args.agy, f"--gemini_dir={args.gemini_dir}"])
 
 raw = ""
+query_buffer = ""
+
+# The hidden PTY has no terminal emulator to answer capability queries.
+# Current agy waits for these replies before it renders the login picker.
+TERMINAL_REPLIES = {
+    "\x1b[>q": b"\x1bP>|xterm(390)\x1b\\",
+    "\x1b[>c": b"\x1b[>0;390;0c",
+    "\x1b[c": b"\x1b[?1;2c",
+    "\x1b[0c": b"\x1b[?1;2c",
+    "\x1b[6n": b"\x1b[1;1R",
+}
 
 
 def pump(timeout, extra=()):
     """Đọc output của agy (phải đọc liên tục để agy không bị nghẽn); trả về các fd khác đã sẵn sàng."""
-    global raw
+    global raw, query_buffer
     r, _, _ = select.select([fd, *extra], [], [], timeout)
     if fd in r:
         try:
-            raw += os.read(fd, 65536).decode("utf-8", "replace")
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                raise SystemExit(fail("agy đã thoát"))
+            decoded = chunk.decode("utf-8", "replace")
+            raw += decoded
+            query_buffer += decoded
+            for query, reply in TERMINAL_REPLIES.items():
+                count = query_buffer.count(query)
+                if count:
+                    os.write(fd, reply * count)
+                    query_buffer = query_buffer.replace(query, "")
+            # Retain only a possible split escape sequence, not old screen text.
+            start = query_buffer.rfind("\x1b")
+            query_buffer = query_buffer[start:] if start >= 0 and any(q.startswith(query_buffer[start:]) for q in TERMINAL_REPLIES) else ""
         except OSError:
             raise SystemExit(fail("agy đã thoát"))
     return [x for x in r if x != fd]
